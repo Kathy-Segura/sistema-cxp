@@ -1,5 +1,5 @@
-import { AccountsPayableApp } from "@/components/accounts-payable-app"
+import { AccountsPayableApp } from "./AccountsPayableApp";
 
-export default function Page() {
-  return <AccountsPayableApp />
+export default function AccountsPayablePage() {
+  return <AccountsPayableApp />;
 }
