@@ -1,10 +1,10 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import * as XLSX from "xlsx";
 import {
   Bell, Check, Menu, Search, UserRound, WalletCards, X,
 } from "lucide-react";
-import type { Section, Invoice, Row, RowAction } from "../types";
+import type { FacturaRecord, Invoice, InvoiceStatus, PagoRecord, PrestamoRecord, PrestamoSaldoRecord, ProveedorRecord, Section, Row, RowAction } from "../types";
 import {
   initialInvoices, suppliers, payments, loans, teamUsers, activity,
 } from "../data/initial-data";
@@ -21,6 +21,7 @@ import { Overview } from "../components/overview/Overview";
 import { useToast } from "../hooks/useToast";
 import { useInvoiceFilters } from "../hooks/useInvoiceFilters";
 import { PageContent } from "../layout/PageContent";
+import { dueDate, INVOICE_EXPORT_HEADERS, INVOICE_IMPORT_HEADERS, isoDate } from "../lib/invoice-file-format";
 
 export function AccountsPayableApp() {
   const [section, setSection] = useState<Section>("Resumen");
@@ -43,24 +44,62 @@ export function AccountsPayableApp() {
   const [dateType, setDateType] = useState(DEFAULT_DATE_TYPE);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  const [restaurantFilter, setRestaurantFilter] = useState("Todos los restaurantes");
+  const [restaurantOptions, setRestaurantOptions] = useState<string[]>([]);
   const [page, setPage] = useState(1);
   const { toast, showToast } = useToast();
   const [mobileOpen, setMobileOpen] = useState(false);
+  useEffect(() => {
+    let active = true;
+    fetch("/api/accounts-payable", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error((await response.json()).error);
+        return response.json();
+      })
+      .then((data: { facturas: FacturaRecord[]; proveedores: ProveedorRecord[]; pagos: PagoRecord[]; prestamos: PrestamoRecord[]; prestamo_saldos: PrestamoSaldoRecord[]; restaurantes: Row[]; usuarios: Row[]; bitacora: Row[] }) => {
+        if (!active) return;
+        const restaurantName = new Map(data.restaurantes.map((row) => [String(row.restaurante_id), String(row.nombre)]));
+        setRestaurantOptions([...restaurantName.values()].filter(Boolean));
+        const providersById = new Map(data.proveedores.map((item) => [item.proveedor_id, item]));
+        const invoiceCount = new Map<string, number>();
+        const providerBalance = new Map<string, number>();
+        data.facturas.forEach((item) => { invoiceCount.set(item.proveedor_id, (invoiceCount.get(item.proveedor_id) ?? 0) + 1); if (item.estado !== "Pagada") providerBalance.set(item.proveedor_id, (providerBalance.get(item.proveedor_id) ?? 0) + item.saldo_pendiente); });
+        setInvoices(data.facturas.map((item) => ({ id: item.factura_id, supplier: providersById.get(item.proveedor_id)?.nombre_legal || item.proveedor_id, code: item.codigo_factura || item.numero_factura, restaurant: restaurantName.get(item.restaurante_id) || item.restaurante_id, issue: item.fecha_emision, due: item.fecha_vencimiento, amount: item.monto_total, status: item.estado, category: item.categoria, dateCreated: item.fecha_ingreso, paidDate: data.pagos.find((payment) => payment.factura_id === item.factura_id)?.fecha_pago })));
+        setSupplierRecords(data.proveedores.map((item) => ({ code: item.codigo_proveedor, name: item.nombre_legal, id: item.ruc, invoices: invoiceCount.get(item.proveedor_id) ?? 0, balance: providerBalance.get(item.proveedor_id) ?? 0, bank: [item.banco, item.cuenta_bancaria].filter(Boolean).join(" · ") || "Sin cuenta registrada", state: item.activo ? "Activo" : "Inactivo" })));
+        setPaymentRecords(data.pagos.map((item) => ({ ref: item.codigo_pago || item.referencia, supplier: providersById.get(item.proveedor_id)?.nombre_legal || item.proveedor_id, restaurant: restaurantName.get(item.restaurante_id) || item.restaurante_id, date: item.fecha_pago, method: item.metodo_pago, amount: item.monto, status: "Completada" })));
+        const latestBalance = new Map<string, number>(); data.prestamo_saldos.forEach((item) => latestBalance.set(item.prestamo_id, item.saldo_final));
+        setLoanRecords(data.prestamos.map((item) => ({ bank: item.acreedor, number: item.numero_prestamo, holder: item.titular, opened: item.fecha_apertura, rate: `${item.tasa_anual * 100}%`, installment: item.cuota_programada, balance: latestBalance.get(item.prestamo_id) ?? item.monto_inicial, date: `${item.dia_pago} de cada mes` })));
+        setUsers(data.usuarios.map((item) => ({ initials: String(item.nombre || "US").split(" ").map((word) => word[0]).join("").slice(0, 2), name: item.nombre, email: item.email, role: item.rol, access: "Según rol", restaurants: "Todos", state: ["true", "1"].includes(String(item.activo).toLowerCase()) ? "Activo" : "Inactivo" })));
+        setLogs(data.bitacora.map((item) => ({ who: item.usuario_id, initials: String(item.usuario_id).slice(0, 2), action: item.accion, detail: `${item.entidad} · ${item.entidad_id}`, date: item.fecha_hora })));
+      })
+      .catch((error) => active && showToast(error instanceof Error ? error.message : "No se pudo conectar con Google Sheets"));
+    return () => { active = false; };
+  }, []);
   const pageSize = PAGE_SIZE;
+  const clearInvoiceFilters = () => { setSearch(""); setFilter(DEFAULT_STATUS_FILTER); setDateType(DEFAULT_DATE_TYPE); setDateFrom(""); setDateTo(""); setRestaurantFilter("Todos los restaurantes"); setPage(1); };
+  const persistInvoices = async (records: Array<{ supplier: string; restaurant: string; number: string; issue: string; due: string; amount: number; category?: string }>) => {
+    const response = await fetch("/api/accounts-payable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "createInvoices", invoices: records }) });
+    if (!response.ok) throw new Error((await response.json()).error || "No se pudieron guardar las facturas.");
+  };
   const invoicesFiltered = useInvoiceFilters(invoices, search, filter);
-  const addInvoice = (data: FormData) => {
+  const addInvoice = async (data: FormData) => {
+    const issue = String(data.get("issue"));
+    const creditDays = Number(data.get("credit") || 0);
     const item: Invoice = {
       id: `FAC-${String(Date.now()).slice(-5)}`,
       supplier: String(data.get("supplier")),
       code: String(data.get("number")),
       restaurant: String(data.get("restaurant")),
-      issue: String(data.get("issue")),
-      due: String(data.get("due")),
+      issue,
+      due: String(data.get("due") || dueDate(issue, creditDays)),
       amount: Number(data.get("amount")),
       status: "Pendiente",
       category: "General",
       dateCreated: new Date().toISOString().slice(0, 10),
     };
+    try {
+      await persistInvoices([{ supplier: item.supplier, restaurant: item.restaurant, number: item.code, issue: item.issue, due: item.due, amount: item.amount, category: item.category }]);
+    } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo guardar la factura"); return; }
     setInvoices((current) => [item, ...current]);
     setLogs((current) => [
       {
@@ -203,23 +242,10 @@ export function AccountsPayableApp() {
           if (!supplier || !code || !Number.isFinite(amount) || amount <= 0)
             return null;
           const rawDate = pick("fecha emision", "fecha de emision", "emision");
-          const dateText =
-            rawDate instanceof Date
-              ? rawDate.toLocaleDateString("es-NI", {
-                  day: "numeric",
-                  month: "short",
-                  year: "numeric",
-                })
-              : String(rawDate || "—");
+          const dateText = isoDate(rawDate);
           const rawDue = pick("fecha de vencimiento", "vencimiento");
-          const dueText =
-            rawDue instanceof Date
-              ? rawDue.toLocaleDateString("es-NI", {
-                  day: "numeric",
-                  month: "short",
-                  year: "numeric",
-                })
-              : String(rawDue || "—");
+          const creditDays = Number(pick("dias de credito", "dias credito", "credit days") || 0);
+          const dueText = isoDate(rawDue) || dueDate(dateText, creditDays);
           return {
             id: `FAC-${code}-${index}`,
             supplier,
@@ -239,6 +265,7 @@ export function AccountsPayableApp() {
         );
         return;
       }
+      await persistInvoices(imported.map((item) => ({ supplier: item.supplier, restaurant: item.restaurant, number: item.code, issue: item.issue, due: item.due, amount: item.amount, category: item.category })));
       setInvoices((current) => [...imported, ...current]);
       setLogs((current) => [
         {
@@ -353,16 +380,9 @@ export function AccountsPayableApp() {
     showToast("Cambios guardados correctamente");
   };
   const exportInvoices = () => {
-    const data = invoicesFiltered.map((row) => ({
-      Proveedor: row.supplier,
-      Restaurante: row.restaurant,
-      Factura: row.code,
-      "Fecha emisión": row.issue,
-      Vencimiento: row.due,
-      Monto: row.amount,
-      Estado: row.status,
-      Categoría: row.category,
-    }));
+    const data = invoicesFiltered.map((row) => Object.fromEntries([
+      [INVOICE_EXPORT_HEADERS[0], row.supplier], [INVOICE_EXPORT_HEADERS[1], row.restaurant], [INVOICE_EXPORT_HEADERS[2], row.code], [INVOICE_EXPORT_HEADERS[3], row.issue], [INVOICE_EXPORT_HEADERS[4], row.due], [INVOICE_EXPORT_HEADERS[5], row.amount], [INVOICE_EXPORT_HEADERS[6], row.status], [INVOICE_EXPORT_HEADERS[7], row.category],
+    ]));
     const book = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(
       book,
@@ -395,26 +415,7 @@ export function AccountsPayableApp() {
   const downloadTemplate = () => {
     const book = XLSX.utils.book_new();
     const sheet = XLSX.utils.aoa_to_sheet([
-      [
-        "Proveedor",
-        "Restaurante",
-        "No. Factura",
-        "Fecha Emisión",
-        "Días de crédito",
-        "Fecha de Vencimiento",
-        "Categoría",
-        "Monto",
-      ],
-      [
-        "Aexpress Nicaragua",
-        "CDP",
-        "16569",
-        "2026-11-05",
-        7,
-        "2026-11-12",
-        "Insumos",
-        27320,
-      ],
+      [...INVOICE_IMPORT_HEADERS],
     ]);
     XLSX.utils.book_append_sheet(book, sheet, "Cuentas por pagar");
     XLSX.writeFile(book, "plantilla-cuentas-por-pagar.xlsx");
@@ -453,7 +454,7 @@ export function AccountsPayableApp() {
             >
               <Icon size={18} strokeWidth={1.8} />
               <span>{name}</span>
-              {name === "Facturas" && <span className="nav-count">12</span>}
+              {name === "Facturas" && <span className="nav-count">{invoices.length}</span>}
             </button>
           ))}
         </nav>
@@ -543,6 +544,10 @@ export function AccountsPayableApp() {
               setDateFrom={setDateFrom}
               dateTo={dateTo}
               setDateTo={setDateTo}
+              restaurantFilter={restaurantFilter}
+              setRestaurantFilter={setRestaurantFilter}
+              restaurantOptions={restaurantOptions}
+              onClearFilters={clearInvoiceFilters}
               page={page}
               setPage={setPage}
               pageSize={pageSize}
@@ -557,7 +562,7 @@ export function AccountsPayableApp() {
                     item.id === id
                       ? {
                           ...item,
-                          status,
+                          status: status as InvoiceStatus,
                           paidDate:
                             status === "Pagada"
                               ? new Date().toISOString().slice(0, 10)
