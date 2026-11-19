@@ -11,7 +11,7 @@ import {
 import type { Section } from "../types";
 
 export const nav: { name: Section; icon: typeof LayoutDashboard }[] = [
- // { name: "Resumen", icon: LayoutDashboard },
+  { name: "Resumen", icon: LayoutDashboard },
   { name: "Facturas", icon: FileText },
   { name: "Proveedores", icon: Users },
   { name: "Transferencias", icon: ArrowLeftRight },
