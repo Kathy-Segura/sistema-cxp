@@ -48,3 +48,10 @@
 .payment-fill:hover{text-decoration:underline}
 .invoice-form-error{padding:10px 12px;border-radius:6px;background:#fef1ef;color:#9d3a31;font-size:12px;line-height:1.4}
 @media(max-width:600px){.invoice-workflow-card .modal-body{padding:15px 17px}.invoice-form-group{padding:10px 12px}.payment-summary dl{gap:8px 16px}}
+.import-preview-card{width:min(1000px,100%)}
+.invoice-import-preview{margin-top:18px;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.invoice-import-preview h3{margin:13px 14px 4px;font-size:14px;color:var(--foreground)}
+.invoice-import-preview p{margin:0 14px 13px;font-size:11px;color:var(--muted-foreground)}
+.invoice-import-preview .data-table th,.invoice-import-preview .data-table td{height:34px}
+.import-preview-pagination{display:flex;justify-content:flex-end;align-items:center;gap:10px;padding:8px 12px}
+.invoice-duplicate{display:table;margin-top:4px;padding:2px 5px;border-radius:4px;background:#faf3e7;color:#775311;font-size:9px;font-weight:700}

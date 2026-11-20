@@ -21,8 +21,9 @@ import { Overview } from "../components/overview/Overview";
 import { useToast } from "../hooks/useToast";
 import { useInvoiceFilters } from "../hooks/useInvoiceFilters";
 import { PageContent } from "../layout/PageContent";
-import { createInvoiceExport, dueDate, parseInvoiceWorkbook, type InvoiceFileRow } from "../lib/invoice-file-format";
+import { createInvoiceExport, dueDate, type InvoiceFileRow } from "../lib/invoice-file-format";
 import { invoiceBalance, invoiceCategory, managuaDate } from "../lib/invoice-balances";
+import { invoiceNumberKey } from "../lib/invoice-identity";
 
 export function AccountsPayableApp() {
   const [section, setSection] = useState<Section>("Resumen");
@@ -36,13 +37,12 @@ export function AccountsPayableApp() {
     "invoice" | "supplier" | "payment" | "loan" | "import" | null
   >(null);
   const [paymentInvoiceId, setPaymentInvoiceId] = useState("");
-  const [importErrors, setImportErrors] = useState<string[]>([]);
   const [rowDialog, setRowDialog] = useState<{
     target: Section;
     row: Row;
     mode: "view" | "edit";
   } | null>(null);
-  const [deleteDialog, setDeleteDialog] = useState<{ target: Section; row: Row; label: string } | null>(null);
+  const [deleteDialog, setDeleteDialog] = useState<{ id: string; label: string } | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState(DEFAULT_STATUS_FILTER);
   const [dateType, setDateType] = useState(DEFAULT_DATE_TYPE);
@@ -101,6 +101,13 @@ export function AccountsPayableApp() {
     return added;
   };
   const invoicesFiltered = useInvoiceFilters(invoices, search, filter, restaurantFilter, dateType, dateFrom, dateTo);
+  const invoiceCounts = new Map<string, number>();
+  for (const invoice of invoices) {
+    const key = invoiceNumberKey(invoice.supplier, invoice.code);
+    invoiceCounts.set(key, (invoiceCounts.get(key) ?? 0) + 1);
+  }
+  const duplicateInvoiceIds = new Set(invoices.filter((invoice) =>
+    (invoiceCounts.get(invoiceNumberKey(invoice.supplier, invoice.code)) ?? 0) > 1).map((invoice) => invoice.id));
   const addInvoice = async (data: FormData) => {
     const issue = String(data.get("issue"));
     const creditDays = Number(data.get("credit") || 0);
@@ -225,30 +232,31 @@ export function AccountsPayableApp() {
     ]);
     showToast("Préstamo registrado correctamente");
   };
-  const importFile = async (file?: File) => {
-    if (!file) return;
-    setImportErrors([]);
-    try {
-      if (file.size > 10 * 1024 * 1024) throw new Error("El archivo supera el límite de 10 MB.");
-      const { rows, errors } = parseInvoiceWorkbook(await file.arrayBuffer(), restaurantOptions);
-      if (errors.length) {
-        setImportErrors(errors);
-        return;
-      }
-      if (!rows.length) throw new Error("Agrega al menos una factura debajo de los encabezados.");
-      await persistInvoices(rows, "IMPORTACION");
-      setModal(null);
-      setSection("Facturas");
-      setPage(1);
-      showToast(`${rows.length} facturas importadas`);
-    } catch (error) {
-      setImportErrors([error instanceof Error ? error.message : "No se pudo importar el archivo."]);
-    }
+  const importInvoices = async (rows: InvoiceFileRow[]) => {
+    await persistInvoices(rows, "IMPORTACION");
+    setModal(null);
+    setSection("Facturas");
+    setPage(1);
+    showToast(`${rows.length} facturas importadas`);
+  };
+  const deleteInvoice = async (id: string) => {
+    const response = await fetch("/api/accounts-payable", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ facturaId: id }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "No se pudo eliminar la factura.");
+    if (!result.deleted || result.facturaId !== id) throw new Error("La API no confirmó la eliminación de esta factura.");
+    setInvoices((current) => current.filter((item) => item.id !== id));
+    setPage(1);
+    setDeleteDialog(null);
+    showToast(`Factura ${id} eliminada`);
   };
   const handleRowAction = async (target: Section, row: Row, action: RowAction) => {
     const label =
       target === "Facturas"
-        ? `${row.supplier} · ${row.code}`
+        ? `${row.supplier} · N.º ${row.code} · ${row.id}`
         : target === "Proveedores"
           ? `${row.name} · ${row.code}`
           : target === "Transferencias"
@@ -272,7 +280,11 @@ export function AccountsPayableApp() {
       return;
     }
     if (action === "delete") {
-      setDeleteDialog({ target, row, label });
+      if (target !== "Facturas") {
+        showToast("La eliminación remota está disponible únicamente para facturas.");
+        return;
+      }
+      setDeleteDialog({ id: String(row.id), label });
       return;
     }
   };
@@ -339,7 +351,6 @@ export function AccountsPayableApp() {
     showToast("Reporte de transferencias descargado");
   };
   const openImport = () => {
-    setImportErrors([]);
     setModal("import");
   };
 
@@ -448,6 +459,7 @@ export function AccountsPayableApp() {
             <SectionContent
               section={section}
               invoices={invoicesFiltered}
+              duplicateInvoiceIds={duplicateInvoiceIds}
               suppliers={supplierRecords}
               payments={paymentRecords}
               loans={loanRecords}
@@ -500,9 +512,8 @@ export function AccountsPayableApp() {
           onSupplier={addSupplier}
           onPayment={addPayment}
           onLoan={addLoan}
-          onImport={importFile}
-          importErrors={importErrors}
-          clearImportErrors={() => setImportErrors([])}
+          onImport={importInvoices}
+          registeredInvoices={invoices}
           paymentInvoices={invoices.filter((item) => (item.pendingBalance ?? item.amount) > 0)}
           paymentInvoiceId={paymentInvoiceId}
           restaurants={restaurantOptions}
@@ -519,7 +530,10 @@ export function AccountsPayableApp() {
           }
         />
       )}
-      {deleteDialog && <DeleteConfirmationCard id={String(deleteDialog.target === "Facturas" ? deleteDialog.row.id : deleteDialog.row.code)} label={deleteDialog.label} onClose={() => setDeleteDialog(null)} onConfirm={async () => { if (deleteDialog.target !== "Facturas") { showToast("La eliminación remota está disponible únicamente para facturas."); setDeleteDialog(null); return; } const response = await fetch("/api/accounts-payable", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ facturaId: deleteDialog.row.id }) }); if (!response.ok) { showToast((await response.json()).error); return; } setInvoices((current) => current.filter((item) => item.id !== deleteDialog.row.id)); setDeleteDialog(null); showToast("Factura eliminada"); }} />}
+      {deleteDialog && (
+        <DeleteConfirmationCard id={deleteDialog.id} label={deleteDialog.label}
+          onClose={() => setDeleteDialog(null)} onConfirm={() => deleteInvoice(deleteDialog.id)} />
+      )}
       {toast && (
         <div className="toast-message" role="status">
           <Check size={17} />

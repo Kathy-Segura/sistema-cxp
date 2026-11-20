@@ -12,9 +12,13 @@ import {
 } from "lucide-react";
 import { FormField } from "../forms/FormField";
 import type { Invoice } from "../../types";
+import { PAYMENT_METHODS } from "../../types";
 import { money } from "../../utils/formatters";
-import { invoiceCategory, managuaDate, moneyCents } from "../../lib/invoice-balances";
-import { dueDate } from "../../lib/invoice-file-format";
+import { invoiceCategory, invoiceCreditDays, managuaDate, moneyCents } from "../../lib/invoice-balances";
+import { dueDate, INVOICE_IMPORT_HEADERS, parseInvoiceWorkbook, type InvoiceFileRow } from "../../lib/invoice-file-format";
+import { invoiceNumberKey } from "../../lib/invoice-identity";
+
+const PREVIEW_PAGE_SIZE = 8;
 export function Modal({
   kind,
   onClose,
@@ -23,8 +27,7 @@ export function Modal({
   onPayment,
   onLoan,
   onImport,
-  importErrors,
-  clearImportErrors,
+  registeredInvoices,
   paymentInvoices,
   paymentInvoiceId,
   restaurants,
@@ -35,14 +38,15 @@ export function Modal({
   onSupplier: (data: FormData) => void;
   onPayment: (data: FormData) => Promise<void>;
   onLoan: (data: FormData) => void;
-  onImport: (file?: File) => Promise<void>;
-  importErrors: string[];
-  clearImportErrors: () => void;
+  onImport: (rows: InvoiceFileRow[]) => Promise<void>;
+  registeredInvoices: Invoice[];
   paymentInvoices: Invoice[];
   paymentInvoiceId: string;
   restaurants: string[];
 }) {
   const [file, setFile] = useState<File | undefined>();
+  const [preview, setPreview] = useState<ReturnType<typeof parseInvoiceWorkbook>>();
+  const [previewPage, setPreviewPage] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
   const [operationError, setOperationError] = useState("");
@@ -97,6 +101,33 @@ export function Modal({
     link.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
+  const previewFile = async (selected: File) => {
+    if (busy) return;
+    setFile(selected);
+    setPreview(undefined);
+    setPreviewPage(0);
+    await run(async () => {
+      if (selected.size > 10 * 1024 * 1024) throw new Error("El archivo supera el límite de 10 MB.");
+      const parsed = parseInvoiceWorkbook(await selected.arrayBuffer(), restaurants);
+      if (!parsed.rows.length && !parsed.errors.length) {
+        throw new Error("Agrega al menos una factura debajo de los encabezados.");
+      }
+      const registered = new Set(registeredInvoices.map((invoice) => invoiceNumberKey(invoice.supplier, invoice.code)));
+      const seen = new Map<string, number>();
+      parsed.rows.forEach((row, index) => {
+        const key = invoiceNumberKey(row.supplier, row.number);
+        const rowNumber = parsed.rowNumbers[index];
+        const firstRow = seen.get(key);
+        if (registered.has(key)) {
+          parsed.errors.push(`Fila ${rowNumber}: ${row.supplier} ya tiene la factura N.º ${row.number} registrada.`);
+        } else if (firstRow !== undefined) {
+          parsed.errors.push(`Fila ${rowNumber}: la factura N.º ${row.number} de ${row.supplier} se repite en la fila ${firstRow}.`);
+        }
+        seen.set(key, firstRow ?? rowNumber);
+      });
+      setPreview(parsed);
+    });
+  };
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -109,8 +140,10 @@ export function Modal({
     event.preventDefault();
     setDragging(false);
     const selected = event.dataTransfer.files[0];
-    if (selected && !busy) { setFile(selected); clearImportErrors(); setOperationError(""); }
+    if (selected) void previewFile(selected);
   };
+  const previewOffset = previewPage * PREVIEW_PAGE_SIZE;
+  const previewRows = preview?.rows.slice(previewOffset, previewOffset + PREVIEW_PAGE_SIZE) ?? [];
   return (
     <div
       className="modal-backdrop"
@@ -119,7 +152,7 @@ export function Modal({
       }}
     >
       <section
-        className={`modal-card ${["invoice", "payment", "import"].includes(kind) ? "invoice-workflow-card" : ""}`}
+        className={`modal-card ${["invoice", "payment", "import"].includes(kind) ? "invoice-workflow-card" : ""} ${kind === "import" && preview ? "import-preview-card" : ""}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="modal-heading"
@@ -173,9 +206,9 @@ export function Modal({
                 hidden
                 disabled={busy}
                 onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                  setFile(e.target.files?.[0]);
-                  clearImportErrors();
-                  setOperationError("");
+                  const selected = e.target.files?.[0];
+                  e.currentTarget.value = "";
+                  if (selected) void previewFile(selected);
                 }}
               />
               <div className="upload-icon">
@@ -184,7 +217,7 @@ export function Modal({
               <strong>{file ? file.name : "Arrastra tu archivo aquí"}</strong>
               <span>
                 {file
-                  ? `${(file.size / 1024).toFixed(1)} KB · listo para importar`
+                  ? `${(file.size / 1024).toFixed(1)} KB · selecciona otro archivo para reemplazarlo`
                   : "o haz clic para buscar en tu equipo"}
               </span>
               <small>Excel .xlsx, .xls o .csv · máximo 10 MB</small>
@@ -196,11 +229,37 @@ export function Modal({
               </span>
             </div>
             {operationError && <p role="alert" className="invoice-form-error">{operationError}</p>}
-            {importErrors.length > 0 && (
+            {preview && (
+              <section className="invoice-import-preview" aria-labelledby="invoice-preview-heading">
+                <h3 id="invoice-preview-heading">Vista previa</h3>
+                <p>{preview.sheetName} · {preview.rows.length} filas legibles{preview.errors.length ? ` · ${preview.errors.length} incidencias` : ""}</p>
+                {previewRows.length > 0 && <>
+                  <div className="table-scroll">
+                    <table className="data-table" aria-label="Facturas del archivo">
+                      <thead><tr><th>Fila</th>{INVOICE_IMPORT_HEADERS.map((header) => <th key={header}>{header}</th>)}</tr></thead>
+                      <tbody>{previewRows.map((row, index) => {
+                        const rowNumber = preview.rowNumbers[previewOffset + index];
+                        return <tr key={rowNumber}>
+                          <td>{rowNumber}</td><td>{row.supplier}</td><td>{row.restaurant}</td><td>{row.number}</td>
+                          <td>{row.issue}</td><td>{invoiceCreditDays(row.issue, row.due)}</td><td>{row.due}</td>
+                          <td>{invoiceCategory(row.issue, row.due)}</td><td className="align-right">{money(row.amount)}</td>
+                        </tr>;
+                      })}</tbody>
+                    </table>
+                  </div>
+                  {preview.rows.length > PREVIEW_PAGE_SIZE && <div className="import-preview-pagination">
+                    <button type="button" className="button-secondary" disabled={busy || previewPage === 0} onClick={() => setPreviewPage(previewPage - 1)}>Anterior</button>
+                    <span>{previewOffset + 1}–{previewOffset + previewRows.length} de {preview.rows.length}</span>
+                    <button type="button" className="button-secondary" disabled={busy || previewOffset + previewRows.length >= preview.rows.length} onClick={() => setPreviewPage(previewPage + 1)}>Siguiente</button>
+                  </div>}
+                </>}
+              </section>
+            )}
+            {!!preview?.errors.length && (
               <div role="alert" className="import-notes danger-text">
                 <ul>
-                  {importErrors.slice(0, 10).map((error) => <li key={error}>{error}</li>)}
-                  {importErrors.length > 10 && <li>{importErrors.length - 10} filas adicionales con errores.</li>}
+                  {preview.errors.slice(0, 10).map((error) => <li key={error}>{error}</li>)}
+                  {preview.errors.length > 10 && <li>{preview.errors.length - 10} incidencias adicionales.</li>}
                 </ul>
               </div>
             )}
@@ -210,10 +269,10 @@ export function Modal({
               </button>
               <button
                 className="button-primary"
-                disabled={!file || busy}
-                onClick={() => void run(() => onImport(file))}
+                disabled={busy || !preview?.rows.length || !!preview.errors.length}
+                onClick={() => { if (preview?.rows.length && !preview.errors.length) void run(() => onImport(preview.rows)); }}
               >
-                <CloudUpload size={16} /> {busy ? "Importando…" : "Importar facturas"}
+                <CloudUpload size={16} /> Importar facturas
               </button>
             </footer>
           </div>
@@ -354,7 +413,7 @@ export function Modal({
                         {remainingAfterPayment !== undefined &&
                           <small aria-live="polite">Saldo después de este pago: {money(remainingAfterPayment)}</small>}
                       </div>
-                      <FormField label="Método de pago" name="method" required select options={["Transferencia", "Pago", "Cheque"]} />
+                      <FormField label="Método de pago" name="method" required select options={[...PAYMENT_METHODS]} />
                       <div className="form-field">
                         <label htmlFor="payment-date">Fecha del pago <span className="required-star">*</span></label>
                         <input id="payment-date" name="date" required type="date" defaultValue={managuaDate()} />

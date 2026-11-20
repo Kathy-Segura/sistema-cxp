@@ -58,6 +58,7 @@ export function parseInvoiceWorkbook(bytes: ArrayBuffer, restaurants: readonly s
       if (!required.every((key) => columns.has(key)) || (!columns.has("due") && !columns.has("credit"))) continue;
 
       const rows: InvoiceFileRow[] = [];
+      const rowNumbers: number[] = [];
       const errors: string[] = [];
       const dataColumns = new Set(columns.values());
       const dataRows = new Set<number>();
@@ -106,9 +107,12 @@ export function parseInvoiceWorkbook(bytes: ArrayBuffer, restaurants: readonly s
         if (!due || (issue && due < issue)) problems.push("Fecha de Vencimiento o Días de crédito no válidos");
         if (!(moneyCents(amount) > 0)) problems.push("Monto debe ser positivo y tener hasta dos decimales");
         if (problems.length) errors.push(`Fila ${row + 1}: ${problems.join(", ")}.`);
-        else if (restaurant) rows.push({ supplier, restaurant, number, issue, due, amount });
+        else if (restaurant) {
+          rows.push({ supplier, restaurant, number, issue, due, amount });
+          rowNumbers.push(row + 1);
+        }
       }
-      return { rows, errors };
+      return { rows, rowNumbers, errors, sheetName: name };
     }
   }
   throw new Error("No se encontraron los encabezados de carga. Usa la plantilla de Cuentas por pagar.");

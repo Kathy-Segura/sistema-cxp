@@ -5,7 +5,7 @@ import { money } from "../../utils/formatters";
 import { StatusBadge } from "./StatusBadge";
 import { ActionButtons } from "../shared/ActionButtons";
 
-export function InvoiceTable({ invoices, compact = false, onPay, onAction }: { invoices: Invoice[]; compact?: boolean; onPay?: (id: string) => void; onAction?: (row: Row, action: "view" | "edit" | "delete") => void }) {
+export function InvoiceTable({ invoices, compact = false, duplicateInvoiceIds, onPay, onAction }: { invoices: Invoice[]; compact?: boolean; duplicateInvoiceIds?: ReadonlySet<string>; onPay?: (id: string) => void; onAction?: (row: Row, action: "view" | "edit" | "delete") => void }) {
   return (
     <div className="table-scroll">
       <table className="data-table">
@@ -22,7 +22,10 @@ export function InvoiceTable({ invoices, compact = false, onPay, onAction }: { i
               <span className="supplier-avatar">{item.supplier.split(" ").slice(0, 2).map((word) => word[0]).join("")}</span>
               <span><strong>{item.supplier}</strong><small>{item.id}</small></span>
             </div></td>
-            <td>{item.code}</td><td><span className="restaurant-pill">{item.restaurant}</span></td>
+            <td>
+              {item.code}
+              {duplicateInvoiceIds?.has(item.id) && <span className="invoice-duplicate" title="El proveedor tiene otra factura con este número">Duplicada</span>}
+            </td><td><span className="restaurant-pill">{item.restaurant}</span></td>
             <td>{item.issue}</td><td className={item.status === "Vencida" ? "due-danger" : ""}>{item.due}</td>
             <td className="align-right amount-cell">{money(item.amount)}</td>
             {!compact && <>

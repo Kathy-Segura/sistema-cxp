@@ -3,6 +3,7 @@ import { getSheetsClient, getSpreadsheetId } from "./google-sheets";
 import type { FacturaRecord, PagoRecord, PrestamoRecord, PrestamoSaldoRecord, ProveedorRecord } from "@/types";
 import { invoiceBalance, invoiceCategory, managuaDate, moneyCents, moneyValue } from "./invoice-balances";
 import { isoDate } from "../utils/formatters";
+import { invoiceNumberKey, normalizeInvoiceIdentity } from "./invoice-identity";
 
 type Primitive = string | number | boolean;
 type SheetRecord = Record<string, Primitive>;
@@ -37,6 +38,20 @@ function cell(value: Primitive) {
   return { userEnteredValue: { stringValue: value } };
 }
 
+function appendCells(sheetId: number, headers: string[], records: SheetRecord[]) {
+  Object.keys(records[0]).forEach((field) => columnIndex(headers, field));
+  return { appendCells: {
+    sheetId, fields: "userEnteredValue",
+    rows: records.map((record) => ({ values: headers.map((header) => cell(record[header] ?? "")) })),
+  } };
+}
+
+export class InvoiceOperationError extends Error {
+  constructor(message: string, readonly status: 404 | 409) {
+    super(message);
+  }
+}
+
 export class AccountsPayableRepository {
   private readonly sheets = getSheetsClient();
   private readonly spreadsheetId = getSpreadsheetId();
@@ -50,16 +65,15 @@ export class AccountsPayableRepository {
     return parseRecords<T>(headers, rows.filter((row) => row.some((value) => String(value ?? "").trim())));
   }
 
-  private async append(tab: (typeof tabs)[number], records: SheetRecord[]) {
-    if (!records.length) return;
-    const { data } = await this.sheets.spreadsheets.values.get({ spreadsheetId: this.spreadsheetId, range: `${tab}!A3:ZZ3` });
-    const headers = data.values?.[0] ?? [];
-    await this.sheets.spreadsheets.values.append({
-      spreadsheetId: this.spreadsheetId,
-      range: `${tab}!A4`,
-      valueInputOption: "RAW",
-      requestBody: { values: records.map((record) => headers.map((header) => record[header] ?? "")) },
+  private async sheetIds() {
+    const { data } = await this.sheets.spreadsheets.get({
+      spreadsheetId: this.spreadsheetId, fields: "sheets.properties(sheetId,title)",
     });
+    return (tab: string) => {
+      const id = data.sheets?.find((sheet) => sheet.properties?.title === tab)?.properties?.sheetId;
+      if (id == null) throw new Error(`No existe la pestaña ${tab}.`);
+      return id;
+    };
   }
 
   private nextSequentialId(prefix: string, values: string[]) {
@@ -68,26 +82,49 @@ export class AccountsPayableRepository {
   }
 
   async deleteInvoice(facturaId: string, actor = "SISTEMA") {
-    const range = "facturas!A3:ZZ";
-    const { data } = await this.sheets.spreadsheets.values.get({ spreadsheetId: this.spreadsheetId, range });
-    const rows = data.values ?? [];
-    const idColumn = rows[0]?.indexOf("factura_id") ?? -1;
-    const recordIndex = rows.findIndex((row, index) => index > 0 && String(row[idColumn] ?? "") === facturaId);
-    if (idColumn < 0 || recordIndex < 1) throw new Error("Factura no encontrada.");
-    const spreadsheet = await this.sheets.spreadsheets.get({ spreadsheetId: this.spreadsheetId, fields: "sheets.properties(sheetId,title)" });
-    const sheetId = spreadsheet.data.sheets?.find((sheet) => sheet.properties?.title === "facturas")?.properties?.sheetId;
-    if (sheetId === undefined) throw new Error("No existe la pestaña facturas.");
-    await this.sheets.spreadsheets.batchUpdate({ spreadsheetId: this.spreadsheetId, requestBody: { requests: [{ deleteDimension: { range: { sheetId, dimension: "ROWS", startIndex: recordIndex + 2, endIndex: recordIndex + 3 } } }] } });
-    await this.append("bitacora", [{ bitacora_id: `BIT-${crypto.randomUUID()}`, fecha_hora: new Date().toISOString(), usuario_id: actor, accion: "Eliminar factura", entidad: "facturas", entidad_id: facturaId, campo: "", valor_anterior: facturaId, valor_nuevo: "", origen: "MANUAL", ip_o_sesion: "" }]);
+    const [{ data }, sheetId] = await Promise.all([
+      this.sheets.spreadsheets.values.batchGet({
+        spreadsheetId: this.spreadsheetId, ranges: ["facturas!A3:ZZ", "bitacora!A3:ZZ"],
+        valueRenderOption: "UNFORMATTED_VALUE", dateTimeRenderOption: "FORMATTED_STRING",
+      }),
+      this.sheetIds(),
+    ]);
+    const [facturas, bitacora] = data.valueRanges ?? [];
+    const [headers = [], ...rows] = facturas?.values ?? [];
+    const [auditHeaders = [], ...auditRows] = bitacora?.values ?? [];
+    const idColumn = columnIndex(headers, "factura_id");
+    const matches = rows.flatMap((row, index) => String(row[idColumn] ?? "").trim() === facturaId ? [index] : []);
+    if (matches.length > 1) throw new InvoiceOperationError("El ID interno aparece en más de una fila. Corrige esos IDs en Google Sheets para poder eliminar la factura correcta.", 409);
+    if (!matches.length) {
+      const deleted = parseRecords<SheetRecord>(auditHeaders, auditRows).some((record) =>
+        record.entidad === "facturas" && record.entidad_id === facturaId && record.accion === "Eliminar factura");
+      if (deleted) return;
+      throw new InvoiceOperationError("Factura no encontrada. Actualiza la lista.", 404);
+    }
+    const [index] = matches;
+    const original = Object.fromEntries(headers.flatMap((header, col) => header ? [[header, rows[index][col] ?? ""]] : []));
+    const audit = {
+      bitacora_id: `BIT-${crypto.randomUUID()}`, fecha_hora: new Date().toISOString(), usuario_id: actor,
+      accion: "Eliminar factura", entidad: "facturas", entidad_id: facturaId, campo: "registro",
+      valor_anterior: JSON.stringify(original), valor_nuevo: "", origen: "MANUAL", ip_o_sesion: "",
+    };
+    const startIndex = index + 3;
+    await this.sheets.spreadsheets.batchUpdate({
+      spreadsheetId: this.spreadsheetId,
+      requestBody: { requests: [
+        { deleteDimension: { range: { sheetId: sheetId("facturas"), dimension: "ROWS", startIndex, endIndex: startIndex + 1 } } },
+        appendCells(sheetId("bitacora"), auditHeaders, [audit]),
+      ] },
+    }, { retry: false });
   }
 
   async recordPayment(input: { facturaRef: string; amount: number; date: string; method: string; reference: string; bank?: string; detail?: string }, actor = "SISTEMA") {
-    const [values, spreadsheet] = await Promise.all([
+    const [values, sheetId] = await Promise.all([
       this.sheets.spreadsheets.values.batchGet({
         spreadsheetId: this.spreadsheetId, ranges: ["facturas!A3:ZZ", "pagos!A3:ZZ", "bitacora!A3:ZZ3"],
         valueRenderOption: "UNFORMATTED_VALUE", dateTimeRenderOption: "FORMATTED_STRING",
       }),
-      this.sheets.spreadsheets.get({ spreadsheetId: this.spreadsheetId, fields: "sheets.properties(sheetId,title)" }),
+      this.sheetIds(),
     ]);
     const [invoicesRange, paymentsRange, auditRange] = values.data.valueRanges ?? [];
     const [invoiceHeaders = [], ...invoiceRows] = invoicesRange?.values ?? [];
@@ -136,18 +173,6 @@ export class AccountsPayableRepository {
       entidad: "facturas", entidad_id: invoice.factura_id, campo: "monto_pagado", valor_anterior: invoice.monto_pagado,
       valor_nuevo: balance.monto_pagado, origen: "MANUAL", ip_o_sesion: "",
     };
-    const sheetId = (name: string) => {
-      const id = spreadsheet.data.sheets?.find((sheet) => sheet.properties?.title === name)?.properties?.sheetId;
-      if (id == null) throw new Error(`No existe la pestaña ${name}.`);
-      return id;
-    };
-    const appendCells = (tab: string, headers: string[], record: SheetRecord) => {
-      Object.keys(record).forEach((field) => columnIndex(headers, field));
-      return { appendCells: {
-        sheetId: sheetId(tab), fields: "userEnteredValue",
-        rows: [{ values: headers.map((header) => cell(record[header] ?? "")) }],
-      } };
-    };
     const invoiceUpdates = Object.entries({ ...balance, actualizado_por: actor, actualizado_en: now }).map(([field, value]) => ({
       updateCells: {
         start: { sheetId: sheetId("facturas"), rowIndex, columnIndex: columnIndex(invoiceHeaders, field) },
@@ -156,7 +181,7 @@ export class AccountsPayableRepository {
     }));
     await this.sheets.spreadsheets.batchUpdate({
       spreadsheetId: this.spreadsheetId,
-      requestBody: { requests: [ ...invoiceUpdates, appendCells("pagos", paymentHeaders, payment), appendCells("bitacora", auditHeaders, audit) ] },
+      requestBody: { requests: [ ...invoiceUpdates, appendCells(sheetId("pagos"), paymentHeaders, [payment]), appendCells(sheetId("bitacora"), auditHeaders, [audit]) ] },
     }, { retry: false });
     return { facturaId: invoice.factura_id, ...balance, payment, alreadyRecorded: false };
   }
@@ -173,20 +198,43 @@ export class AccountsPayableRepository {
   }
 
   async createInvoices(input: Array<{ supplier: string; restaurant: string; number: string; issue: string; due: string; amount: number }>, origin = "MANUAL", actor = "SISTEMA") {
-    const [providers, restaurants, existingInvoices] = await Promise.all([this.list<ProveedorRecord>("proveedores"), this.list<SheetRecord>("restaurantes"), this.list<FacturaRecord>("facturas")]);
-    const providerByName = new Map(providers.map((provider) => [provider.nombre_legal.trim().toLowerCase(), provider]));
+    const [{ data }, sheetId] = await Promise.all([
+      this.sheets.spreadsheets.values.batchGet({
+        spreadsheetId: this.spreadsheetId,
+        ranges: ["proveedores", "restaurantes", "facturas", "bitacora", "pagos"].map((tab) => `${tab}!A3:ZZ`),
+        valueRenderOption: "UNFORMATTED_VALUE", dateTimeRenderOption: "FORMATTED_STRING",
+      }),
+      this.sheetIds(),
+    ]);
+    const [providerRange, restaurantRange, invoiceRange, auditRange, paymentRange] = data.valueRanges ?? [];
+    const [providerHeaders = [], ...providerRows] = providerRange?.values ?? [];
+    const [restaurantHeaders = [], ...restaurantRows] = restaurantRange?.values ?? [];
+    const [invoiceHeaders = [], ...invoiceRows] = invoiceRange?.values ?? [];
+    const [auditHeaders = [], ...auditRows] = auditRange?.values ?? [];
+    const [paymentHeaders = [], ...paymentRows] = paymentRange?.values ?? [];
+    const providers = parseRecords<ProveedorRecord>(providerHeaders, providerRows).filter((provider) => provider.proveedor_id);
+    const restaurants = parseRecords<SheetRecord>(restaurantHeaders, restaurantRows);
+    const existingInvoices = parseRecords<FacturaRecord>(invoiceHeaders, invoiceRows).filter((invoice) => invoice.factura_id);
+    const providerByName = new Map(providers.map((provider) => [normalizeInvoiceIdentity(provider.nombre_legal), provider]));
+    const providerNames = new Map(providers.map((provider) => [provider.proveedor_id, provider.nombre_legal]));
     const restaurantByName = new Map(restaurants.map((restaurant) => [String(restaurant.nombre).trim().toLowerCase(), String(restaurant.restaurante_id)]));
     const now = new Date().toISOString();
     const date = managuaDate();
     const newProviders: SheetRecord[] = [];
-    const invoiceKey = (provider: string, restaurant: string, number: string, issue: string, amount: number) =>
-      JSON.stringify([provider, restaurant, number.trim().toLowerCase(), issue, amount]);
     const registered = new Set(existingInvoices.map((invoice) =>
-      invoiceKey(invoice.proveedor_id, invoice.restaurante_id, invoice.numero_factura, isoDate(invoice.fecha_emision), invoice.monto_total)));
+      invoiceNumberKey(providerNames.get(invoice.proveedor_id) || invoice.proveedor_id, invoice.numero_factura)));
     let providerSequence = providers.map((provider) => provider.proveedor_id);
-    let invoiceSequence = existingInvoices.map((invoice) => invoice.factura_id);
+    const invoiceSequence = [
+      ...existingInvoices.map((invoice) => invoice.factura_id),
+      ...parseRecords<SheetRecord>(auditHeaders, auditRows)
+        .filter((record) => record.entidad === "facturas").map((record) => String(record.entidad_id ?? "")),
+      ...parseRecords<PagoRecord>(paymentHeaders, paymentRows).map((payment) => payment.factura_id ?? ""),
+    ];
     const invoices: SheetRecord[] = input.map((item) => {
-      const providerKey = item.supplier.trim().toLowerCase();
+      const providerKey = normalizeInvoiceIdentity(item.supplier);
+      const key = invoiceNumberKey(providerKey, item.number);
+      if (registered.has(key)) throw new InvoiceOperationError(`El proveedor ${item.supplier} ya tiene registrada la factura N.º ${item.number}.`, 409);
+      registered.add(key);
       let provider = providerByName.get(providerKey);
       if (!provider) {
         const proveedor_id = this.nextSequentialId("PROV", providerSequence); providerSequence = [...providerSequence, proveedor_id];
@@ -195,14 +243,18 @@ export class AccountsPayableRepository {
       }
       const restaurante_id = restaurantByName.get(item.restaurant.trim().toLowerCase());
       if (!restaurante_id) throw new Error(`Restaurante no válido: ${item.restaurant}`);
-      const key = invoiceKey(provider.proveedor_id, restaurante_id, item.number, item.issue, item.amount);
-      if (registered.has(key)) throw new Error(`Factura duplicada: ${item.number} de ${item.supplier} en ${item.restaurant}.`);
-      registered.add(key);
-      const factura_id = this.nextSequentialId("FAC", invoiceSequence); invoiceSequence = [...invoiceSequence, factura_id];
+      const factura_id = this.nextSequentialId("FAC", invoiceSequence);
+      invoiceSequence.push(factura_id);
       return { factura_id, codigo_factura: factura_id, proveedor_id: provider.proveedor_id, restaurante_id, numero_factura: item.number.trim(), fecha_ingreso: date, fecha_emision: item.issue, fecha_vencimiento: item.due, moneda: "NIO", monto_total: item.amount, ...invoiceBalance(item.amount, 0, item.due, date), categoria: invoiceCategory(item.issue, item.due) ?? "", origen_carga: origin, creado_por: actor, creado_en: now, actualizado_por: actor, actualizado_en: now };
     });
-    await this.append("proveedores", newProviders); await this.append("facturas", invoices);
-    await this.append("bitacora", invoices.map((invoice) => ({ bitacora_id: `BIT-${crypto.randomUUID()}`, fecha_hora: now, usuario_id: actor, accion: "Crear factura", entidad: "facturas", entidad_id: invoice.factura_id, campo: "", valor_anterior: "", valor_nuevo: invoice.codigo_factura, origen: invoice.origen_carga, ip_o_sesion: "" })));
+    const audit = invoices.map((invoice) => ({ bitacora_id: `BIT-${crypto.randomUUID()}`, fecha_hora: now, usuario_id: actor, accion: "Crear factura", entidad: "facturas", entidad_id: invoice.factura_id, campo: "", valor_anterior: "", valor_nuevo: invoice.codigo_factura, origen: invoice.origen_carga, ip_o_sesion: "" }));
+    await this.sheets.spreadsheets.batchUpdate({
+      spreadsheetId: this.spreadsheetId, requestBody: { requests: [
+        ...(newProviders.length ? [appendCells(sheetId("proveedores"), providerHeaders, newProviders)] : []),
+        appendCells(sheetId("facturas"), invoiceHeaders, invoices),
+        appendCells(sheetId("bitacora"), auditHeaders, audit),
+      ] },
+    }, { retry: false });
     return invoices.map((invoice) => invoice.factura_id);
   }
 

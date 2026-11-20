@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { AccountsPayableRepository } from "@/lib/accounts-payable-repository";
+import { AccountsPayableRepository, InvoiceOperationError } from "@/lib/accounts-payable-repository";
+import { PAYMENT_METHODS, type PaymentMethod } from "@/types";
 import { moneyCents } from "@/lib/invoice-balances";
 import { isoDate } from "@/utils/formatters";
 
@@ -36,7 +37,7 @@ export async function POST(request: Request) {
         detail: String(payment.detail ?? "").trim(),
       };
       if (!input.facturaRef || !input.date || !(moneyCents(input.amount) > 0) || !input.reference ||
-          !["Transferencia", "Pago", "Cheque"].includes(input.method)) {
+          !PAYMENT_METHODS.includes(input.method as PaymentMethod)) {
         return NextResponse.json({ error: "Indica una factura, fecha, método, referencia y monto positivo con hasta dos decimales." }, { status: 400 });
       }
       return NextResponse.json(await write(() => new AccountsPayableRepository().recordPayment(input)));
@@ -56,18 +57,23 @@ export async function POST(request: Request) {
     const ids = await write(() => new AccountsPayableRepository().createInvoices(invoices, origin));
     return NextResponse.json({ created: ids.length, ids }, { status: 201 });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "No se pudieron guardar las facturas." }, { status: 500 });
+    return NextResponse.json({ error: error instanceof Error ? error.message : "No se pudieron guardar las facturas." },
+      { status: error instanceof InvoiceOperationError ? error.status : 500 });
   }
 }
 
 export async function DELETE(request: Request) {
   try {
     const { facturaId } = await request.json();
-    if (!/^FAC-\d+$/.test(String(facturaId))) return NextResponse.json({ error: "ID de factura inválido." }, { status: 400 });
-    await write(() => new AccountsPayableRepository().deleteInvoice(String(facturaId)));
-    return NextResponse.json({ deleted: true });
+    if (typeof facturaId !== "string" || !facturaId.trim() || facturaId.length > 128) {
+      return NextResponse.json({ error: "ID de factura inválido." }, { status: 400 });
+    }
+    const id = facturaId.trim();
+    await write(() => new AccountsPayableRepository().deleteInvoice(id));
+    return NextResponse.json({ deleted: true, facturaId: id });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "No se pudo eliminar la factura." }, { status: 500 });
+    return NextResponse.json({ error: error instanceof Error ? error.message : "No se pudo eliminar la factura." },
+      { status: error instanceof InvoiceOperationError ? error.status : 500 });
   }
 }
 

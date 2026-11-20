@@ -16,13 +16,19 @@ export function DeleteConfirmationCard({
   const [step, setStep] = useState(1);
   const [value, setValue] = useState("");
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
   const proceed = async () => {
-    if (step === 1) return setStep(2);
-    if (step === 2 && value === id) return setStep(3);
-    if (step === 3 && value === "ELIMINAR") {
-      setSaving(true);
-      await onConfirm();
+    if (saving) return;
+    if (step === 1 || (step === 2 && value.trim() === id)) {
+      setValue("");
+      return setStep(step + 1);
     }
+    if (step !== 3 || value.trim() !== "ELIMINAR") return;
+    setSaving(true);
+    setError("");
+    try { await onConfirm(); }
+    catch (error) { setError(error instanceof Error ? error.message : "No se pudo eliminar la factura."); }
+    finally { setSaving(false); }
   };
   const prompt =
     step === 1
@@ -36,17 +42,19 @@ export function DeleteConfirmationCard({
         className="modal-card delete-confirmation"
         role="dialog"
         aria-modal="true"
+        aria-labelledby="delete-title"
       >
         <header className="modal-header">
           <div>
             <span className="modal-kicker">CONFIRMACIÓN DE ELIMINACIÓN</span>
-            <h2>Eliminar registro</h2>
+            <h2 id="delete-title">Eliminar factura</h2>
             <p>{label}</p>
           </div>
           <button
             className="icon-button modal-close"
             onClick={onClose}
             aria-label="Cerrar"
+            disabled={saving}
           >
             <X size={19} />
           </button>
@@ -60,25 +68,29 @@ export function DeleteConfirmationCard({
           {step > 1 && (
             <input
               className="delete-confirmation-input"
+              key={step}
+              aria-label={step === 2 ? "ID interno de la factura" : "Escribe ELIMINAR"}
               autoFocus
+              disabled={saving}
               value={value}
               onChange={(event) => setValue(event.target.value)}
             />
           )}
+          {error && <p role="alert" className="invoice-form-error">{error}</p>}
           <div className="modal-footer">
-            <button className="button-secondary" onClick={onClose}>
+            <button className="button-secondary" onClick={onClose} disabled={saving}>
               Cancelar
             </button>
             <button
               className="button-primary delete-confirm-button"
               disabled={
                 saving ||
-                (step === 2 && value !== id) ||
-                (step === 3 && value !== "ELIMINAR")
+                (step === 2 && value.trim() !== id) ||
+                (step === 3 && value.trim() !== "ELIMINAR")
               }
               onClick={proceed}
             >
-              <Trash2 size={16} /> {step === 3 ? "Eliminar" : "Continuar"}
+              <Trash2 size={16} /> {saving ? "Eliminando…" : step === 3 ? "Eliminar" : "Continuar"}
             </button>
           </div>
         </div>

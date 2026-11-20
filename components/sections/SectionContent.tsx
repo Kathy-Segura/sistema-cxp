@@ -1,19 +1,9 @@
 "use client";
 import {
-  ArrowLeftRight,
-  ArrowUpRight,
-  CalendarDays,
-  ChevronDown,
-  CloudUpload,
-  FileDown,
-  Filter,
-  HandCoins,
-  Plus,
-  Search,
-  ShieldCheck,
-  SlidersHorizontal,
-  X,
+  ArrowLeftRight, ArrowUpRight, CalendarDays, ChevronDown, CloudUpload, FileDown,
+  Filter, HandCoins, Plus, Search, ShieldCheck, SlidersHorizontal, X,
 } from "lucide-react";
+
 import type { Section, Invoice, Row } from "../../types";
 import { sectionsMeta } from "../../constants/section-meta";
 import { money } from "../../utils/formatters";
@@ -24,13 +14,14 @@ import { ActionButtons } from "../shared/ActionButtons";
 import { ProfileContent } from "../forms/ProfileContent";
 
 export function SectionContent({
-  section, invoices, suppliers, payments, loans, users, search, setSearch, filter,
+  section, invoices, duplicateInvoiceIds, suppliers, payments, loans, users, search, setSearch, filter,
   setFilter, dateType, setDateType, dateFrom, setDateFrom, dateTo, setDateTo,
   restaurantFilter, setRestaurantFilter, restaurantOptions, onClearFilters, page,
   setPage, pageSize, setPageSize, onCreate, onExport, onToast, onPay, logs, onAction,
 }: {
   section: Section;
   invoices: Invoice[];
+  duplicateInvoiceIds: ReadonlySet<string>;
   suppliers: Row[];
   payments: Row[];
   loans: Row[];
@@ -261,6 +252,7 @@ export function SectionContent({
       {section === "Facturas" && (
         <div className="panel table-panel">
           <InvoiceTable
+            duplicateInvoiceIds={duplicateInvoiceIds}
             invoices={visibleRows as unknown as Invoice[]}
             onPay={onPay}
             onAction={(row, action) => onAction(section, row, action)}
