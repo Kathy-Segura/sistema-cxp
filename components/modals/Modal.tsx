@@ -2,18 +2,438 @@
 import type React from "react";
 import { useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
-import { ArrowDownToLine, Check, CloudUpload, FileSpreadsheet, UploadCloud, X } from "lucide-react";
+import {
+  ArrowDownToLine,
+  Check,
+  CloudUpload,
+  FileSpreadsheet,
+  UploadCloud,
+  X,
+} from "lucide-react";
 import { FormField } from "../forms/FormField";
-export function Modal({ kind, onClose, onInvoice, onSupplier, onPayment, onLoan, onImport, onTemplate }: { kind: "invoice" | "supplier" | "payment" | "loan" | "import"; onClose: () => void; onInvoice: (data: FormData) => void; onSupplier: (data: FormData) => void; onPayment: (data: FormData) => void; onLoan: (data: FormData) => void; onImport: (file?: File) => void; onTemplate: () => void }) {
-  const [file, setFile] = useState<File | undefined>(); const [dragging, setDragging] = useState(false); const inputRef = useRef<HTMLInputElement>(null)
-  const meta = { invoice: ["Nueva factura", "Registra una cuenta por pagar de proveedor."], supplier: ["Nuevo proveedor", "Agrega un proveedor al directorio del grupo."], payment: ["Registrar transferencia", "Guarda el método y los detalles del pago."], loan: ["Nuevo préstamo", "Agrega una obligación y configura su seguimiento."], import: ["Carga masiva de facturas", "Importa varias cuentas por pagar desde una plantilla Excel."] }[kind]
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const data = new FormData(event.currentTarget); if (kind === "invoice") onInvoice(data); if (kind === "supplier") onSupplier(data); if (kind === "payment") onPayment(data); if (kind === "loan") onLoan(data) }
-  const onDrop = (event: React.DragEvent<HTMLDivElement>) => { event.preventDefault(); setDragging(false); const selected = event.dataTransfer.files[0]; if (selected) setFile(selected) }
-  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-heading"><header className="modal-header"><div><span className="modal-kicker">GRUPO BUEN SABOR</span><h2 id="modal-heading">{meta[0]}</h2><p>{meta[1]}</p></div><button className="icon-button modal-close" onClick={onClose} aria-label="Cerrar"><X size={19} /></button></header>
-    {kind === "import" ? <div className="modal-body"><button className="template-download" onClick={onTemplate}><span className="template-icon"><FileSpreadsheet size={20} /></span><span><strong>Descargar plantilla Excel</strong><small>Usa el formato oficial para evitar errores</small></span><ArrowDownToLine size={17} /></button><div className={`drop-zone ${dragging ? "drop-active" : ""}`} onDragOver={(e) => { e.preventDefault(); setDragging(true) }} onDragLeave={() => setDragging(false)} onDrop={onDrop} onClick={() => inputRef.current?.click()} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") inputRef.current?.click() }}><input ref={inputRef} type="file" accept=".xlsx,.xls,.csv" hidden onChange={(e: ChangeEvent<HTMLInputElement>) => setFile(e.target.files?.[0])} /><div className="upload-icon"><UploadCloud size={22} /></div><strong>{file ? file.name : "Arrastra tu archivo aquí"}</strong><span>{file ? `${(file.size / 1024).toFixed(1)} KB · listo para importar` : "o haz clic para buscar en tu equipo"}</span><small>Excel .xlsx, .xls o .csv · máximo 10 MB</small></div><div className="import-notes"><Check size={15} /><span>Las filas se validan antes de agregarse. Las facturas duplicadas se pueden revisar en la tabla.</span></div><footer className="modal-footer"><button className="button-secondary" onClick={onClose}>Cancelar</button><button className="button-primary" disabled={!file} onClick={() => onImport(file)}><CloudUpload size={16} /> Importar facturas</button></footer></div> : <form onSubmit={handleSubmit} className="modal-body"><div className="form-grid">
-      {kind === "invoice" && <><FormField label="Proveedor" name="supplier" required placeholder="Nombre del proveedor" /><FormField label="No. Factura" name="number" required placeholder="Código o número de factura" /><FormField label="Restaurante" name="restaurant" required select options={["BC LAS COLINAS", "BC VILLA FONTANA", "CDP", "AJI", "LC", "DF"]} /><FormField label="Monto" name="amount" required type="number" placeholder="0.00" /><FormField label="Fecha Emisión" name="issue" required type="date" /><FormField label="Fecha de Vencimiento" name="due" type="date" /><FormField label="Días de crédito" name="credit" type="number" placeholder="0" /><FormField label="Categoría" name="category" select options={["Alimentos", "Insumos", "Empaques", "Servicios", "Impuestos", "Otra"]} /></>}
-      {kind === "supplier" && <><FormField label="Nombre o razón social" name="name" required placeholder="Ej. Aexpress Nicaragua" /><FormField label="Código de proveedor" name="code" required placeholder="Ej. PRV-007" /><FormField label="RUC / identificación" name="taxId" required placeholder="Número de identificación" /><FormField label="Contacto" name="contact" placeholder="Nombre de contacto" /><FormField label="Correo electrónico" name="email" type="email" placeholder="proveedor@correo.com" /><FormField label="Teléfono" name="phone" placeholder="+505 0000 0000" /><FormField label="Banco" name="bank" placeholder="Nombre del banco" /><FormField label="Cuenta bancaria" name="account" placeholder="Últimos dígitos o referencia" /></>}
-      {kind === "payment" && <><FormField label="Proveedor" name="supplier" required placeholder="Proveedor registrado" /><FormField label="Factura asociada" name="invoice" required placeholder="Código de factura" /><FormField label="Restaurante" name="restaurant" required select options={["BC LAS COLINAS", "BC VILLA FONTANA", "CDP", "AJI", "LC", "DF"]} /><FormField label="Monto pagado (C$)" name="amount" required type="number" placeholder="0.00" /><FormField label="Método de pago" name="method" required select options={["Transferencia", "Pago", "Cheque"]} /><FormField label="Fecha del pago" name="date" required type="date" /><FormField label="Referencia / N.º transferencia" name="reference" required placeholder="Referencia bancaria" /><FormField label="Banco de origen" name="bank" placeholder="Banco de origen" /><div className="form-field form-full"><label htmlFor="payment-detail">Detalle del pago</label><textarea id="payment-detail" name="detail" placeholder="Observaciones o descripción del pago" rows={3} /></div></>}
-      {kind === "loan" && <><FormField label="Banco" name="bank" required placeholder="Ej. BAC Nicaragua" /><FormField label="N.º de préstamo" name="number" required placeholder="Número de referencia" /><FormField label="Titular" name="holder" required placeholder="Nombre del titular" /><FormField label="Uso del préstamo" name="use" placeholder="Ej. Capital de trabajo" /><FormField label="Fecha de apertura" name="opened" required type="date" /><FormField label="Fecha final" name="endDate" type="date" /><FormField label="Tasa de interés (%)" name="rate" required type="number" placeholder="0.00" /><FormField label="Cuota mensual (C$)" name="installment" required type="number" placeholder="0.00" /><FormField label="Saldo actual (C$)" name="balance" required type="number" placeholder="0.00" /><FormField label="Día de pago mensual" name="payday" required type="number" placeholder="1" /></>}
-    </div><footer className="modal-footer"><button type="button" className="button-secondary" onClick={onClose}>Cancelar</button><button type="submit" className="button-primary"><Check size={16} /> Guardar {kind === "invoice" ? "factura" : kind === "supplier" ? "proveedor" : kind === "payment" ? "pago" : "préstamo"}</button></footer></form>}</section></div>
+export function Modal({
+  kind,
+  onClose,
+  onInvoice,
+  onSupplier,
+  onPayment,
+  onLoan,
+  onImport,
+  onTemplate,
+}: {
+  kind: "invoice" | "supplier" | "payment" | "loan" | "import";
+  onClose: () => void;
+  onInvoice: (data: FormData) => void;
+  onSupplier: (data: FormData) => void;
+  onPayment: (data: FormData) => void;
+  onLoan: (data: FormData) => void;
+  onImport: (file?: File) => void;
+  onTemplate: () => void;
+}) {
+  const [file, setFile] = useState<File | undefined>();
+  const [dragging, setDragging] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const meta = {
+    invoice: ["Nueva factura", "Registra una cuenta por pagar de proveedor."],
+    supplier: [
+      "Nuevo proveedor",
+      "Agrega un proveedor al directorio del grupo.",
+    ],
+    payment: [
+      "Registrar transferencia",
+      "Guarda el método y los detalles del pago.",
+    ],
+    loan: [
+      "Nuevo préstamo",
+      "Agrega una obligación y configura su seguimiento.",
+    ],
+    import: [
+      "Carga masiva de facturas",
+      "Importa varias cuentas por pagar desde una plantilla Excel.",
+    ],
+  }[kind];
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    if (kind === "invoice") onInvoice(data);
+    if (kind === "supplier") onSupplier(data);
+    if (kind === "payment") onPayment(data);
+    if (kind === "loan") onLoan(data);
+  };
+  const onDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDragging(false);
+    const selected = event.dataTransfer.files[0];
+    if (selected) setFile(selected);
+  };
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section
+        className="modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="modal-heading"
+      >
+        <header className="modal-header">
+          <div>
+            <span className="modal-kicker">GRUPO BUEN SABOR</span>
+            <h2 id="modal-heading">{meta[0]}</h2>
+            <p>{meta[1]}</p>
+          </div>
+          <button
+            className="icon-button modal-close"
+            onClick={onClose}
+            aria-label="Cerrar"
+          >
+            <X size={19} />
+          </button>
+        </header>
+        {kind === "import" ? (
+          <div className="modal-body">
+            <button className="template-download" onClick={onTemplate}>
+              <span className="template-icon">
+                <FileSpreadsheet size={20} />
+              </span>
+              <span>
+                <strong>Descargar plantilla Excel</strong>
+                <small>Usa el formato oficial para evitar errores</small>
+              </span>
+              <ArrowDownToLine size={17} />
+            </button>
+            <div
+              className={`drop-zone ${dragging ? "drop-active" : ""}`}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragging(true);
+              }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={onDrop}
+              onClick={() => inputRef.current?.click()}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ")
+                  inputRef.current?.click();
+              }}
+            >
+              <input
+                ref={inputRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                hidden
+                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                  setFile(e.target.files?.[0])
+                }
+              />
+              <div className="upload-icon">
+                <UploadCloud size={22} />
+              </div>
+              <strong>{file ? file.name : "Arrastra tu archivo aquí"}</strong>
+              <span>
+                {file
+                  ? `${(file.size / 1024).toFixed(1)} KB · listo para importar`
+                  : "o haz clic para buscar en tu equipo"}
+              </span>
+              <small>Excel .xlsx, .xls o .csv · máximo 10 MB</small>
+            </div>
+            <div className="import-notes">
+              <Check size={15} />
+              <span>
+                Las filas se validan antes de agregarse. Las facturas duplicadas
+                se pueden revisar en la tabla.
+              </span>
+            </div>
+            <footer className="modal-footer">
+              <button className="button-secondary" onClick={onClose}>
+                Cancelar
+              </button>
+              <button
+                className="button-primary"
+                disabled={!file}
+                onClick={() => onImport(file)}
+              >
+                <CloudUpload size={16} /> Importar facturas
+              </button>
+            </footer>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="modal-body">
+            <div className="form-grid">
+              {kind === "invoice" && (
+                <>
+                  <FormField
+                    label="Proveedor"
+                    name="supplier"
+                    required
+                    placeholder="Nombre del proveedor"
+                  />
+                  <FormField
+                    label="No. Factura"
+                    name="number"
+                    required
+                    placeholder="Código o número de factura"
+                  />
+                  <FormField
+                    label="Restaurante"
+                    name="restaurant"
+                    required
+                    select
+                    options={[
+                      "BC LAS COLINAS",
+                      "BC VILLA FONTANA",
+                      "CDP",
+                      "AJI",
+                      "LC",
+                      "DF",
+                    ]}
+                  />
+                  <FormField
+                    label="Monto"
+                    name="amount"
+                    required
+                    type="number"
+                    placeholder="0.00"
+                  />
+                  <FormField
+                    label="Fecha Emisión"
+                    name="issue"
+                    required
+                    type="date"
+                  />
+                  <FormField
+                    label="Fecha de Vencimiento"
+                    name="due"
+                    type="date"
+                  />
+                  <FormField
+                    label="Días de crédito"
+                    name="credit"
+                    type="number"
+                    placeholder="0"
+                  />
+                  <FormField
+                    label="Categoría"
+                    name="category"
+                    select
+                    options={[
+                      "Alimentos",
+                      "Insumos",
+                      "Empaques",
+                      "Servicios",
+                      "Impuestos",
+                      "Otra",
+                    ]}
+                  />
+                </>
+              )}
+              {kind === "supplier" && (
+                <>
+                  <FormField
+                    label="Nombre o razón social"
+                    name="name"
+                    required
+                    placeholder="Ej. Aexpress Nicaragua"
+                  />
+                  <FormField
+                    label="Código de proveedor"
+                    name="code"
+                    required
+                    placeholder="Ej. PRV-007"
+                  />
+                  <FormField
+                    label="RUC / identificación"
+                    name="taxId"
+                    required
+                    placeholder="Número de identificación"
+                  />
+                  <FormField
+                    label="Contacto"
+                    name="contact"
+                    placeholder="Nombre de contacto"
+                  />
+                  <FormField
+                    label="Correo electrónico"
+                    name="email"
+                    type="email"
+                    placeholder="proveedor@correo.com"
+                  />
+                  <FormField
+                    label="Teléfono"
+                    name="phone"
+                    placeholder="+505 0000 0000"
+                  />
+                  <FormField
+                    label="Banco"
+                    name="bank"
+                    placeholder="Nombre del banco"
+                  />
+                  <FormField
+                    label="Cuenta bancaria"
+                    name="account"
+                    placeholder="Últimos dígitos o referencia"
+                  />
+                </>
+              )}
+              {kind === "payment" && (
+                <>
+                  <FormField
+                    label="Proveedor"
+                    name="supplier"
+                    required
+                    placeholder="Proveedor registrado"
+                  />
+                  <FormField
+                    label="Factura asociada"
+                    name="invoice"
+                    required
+                    placeholder="Código de factura"
+                  />
+                  <FormField
+                    label="Restaurante"
+                    name="restaurant"
+                    required
+                    select
+                    options={[
+                      "BC LAS COLINAS",
+                      "BC VILLA FONTANA",
+                      "CDP",
+                      "AJI",
+                      "LC",
+                      "DF",
+                    ]}
+                  />
+                  <FormField
+                    label="Monto pagado (C$)"
+                    name="amount"
+                    required
+                    type="number"
+                    placeholder="0.00"
+                  />
+                  <FormField
+                    label="Método de pago"
+                    name="method"
+                    required
+                    select
+                    options={["Transferencia", "Pago", "Cheque"]}
+                  />
+                  <FormField
+                    label="Fecha del pago"
+                    name="date"
+                    required
+                    type="date"
+                  />
+                  <FormField
+                    label="Referencia / N.º transferencia"
+                    name="reference"
+                    required
+                    placeholder="Referencia bancaria"
+                  />
+                  <FormField
+                    label="Banco de origen"
+                    name="bank"
+                    placeholder="Banco de origen"
+                  />
+                  <div className="form-field form-full">
+                    <label htmlFor="payment-detail">Detalle del pago</label>
+                    <textarea
+                      id="payment-detail"
+                      name="detail"
+                      placeholder="Observaciones o descripción del pago"
+                      rows={3}
+                    />
+                  </div>
+                </>
+              )}
+              {kind === "loan" && (
+                <>
+                  <FormField
+                    label="Banco"
+                    name="bank"
+                    required
+                    placeholder="Ej. BAC Nicaragua"
+                  />
+                  <FormField
+                    label="N.º de préstamo"
+                    name="number"
+                    required
+                    placeholder="Número de referencia"
+                  />
+                  <FormField
+                    label="Titular"
+                    name="holder"
+                    required
+                    placeholder="Nombre del titular"
+                  />
+                  <FormField
+                    label="Uso del préstamo"
+                    name="use"
+                    placeholder="Ej. Capital de trabajo"
+                  />
+                  <FormField
+                    label="Fecha de apertura"
+                    name="opened"
+                    required
+                    type="date"
+                  />
+                  <FormField label="Fecha final" name="endDate" type="date" />
+                  <FormField
+                    label="Tasa de interés (%)"
+                    name="rate"
+                    required
+                    type="number"
+                    placeholder="0.00"
+                  />
+                  <FormField
+                    label="Cuota mensual (C$)"
+                    name="installment"
+                    required
+                    type="number"
+                    placeholder="0.00"
+                  />
+                  <FormField
+                    label="Saldo actual (C$)"
+                    name="balance"
+                    required
+                    type="number"
+                    placeholder="0.00"
+                  />
+                  <FormField
+                    label="Día de pago mensual"
+                    name="payday"
+                    required
+                    type="number"
+                    placeholder="1"
+                  />
+                </>
+              )}
+            </div>
+            <footer className="modal-footer">
+              <button
+                type="button"
+                className="button-secondary"
+                onClick={onClose}
+              >
+                Cancelar
+              </button>
+              <button type="submit" className="button-primary">
+                <Check size={16} /> Guardar{" "}
+                {kind === "invoice"
+                  ? "factura"
+                  : kind === "supplier"
+                    ? "proveedor"
+                    : kind === "payment"
+                      ? "pago"
+                      : "préstamo"}
+              </button>
+            </footer>
+          </form>
+        )}
+      </section>
+    </div>
+  );
 }

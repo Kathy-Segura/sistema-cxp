@@ -10,12 +10,12 @@ import {
 } from "../data/initial-data";
 import { nav } from "../constants/navigation";
 import {
-  PAGE_SIZE,
   DEFAULT_STATUS_FILTER,
   DEFAULT_DATE_TYPE,
 } from "../constants/sections";
 import { Modal } from "../components/modals/Modal";
 import { RecordActionModal } from "../components/modals/RecordActionModal";
+import { DeleteConfirmationCard } from "../components/modals/DeleteConfirmationCard";
 import { SectionContent } from "../components/sections/SectionContent";
 import { Overview } from "../components/overview/Overview";
 import { useToast } from "../hooks/useToast";
@@ -39,6 +39,7 @@ export function AccountsPayableApp() {
     row: Row;
     mode: "view" | "edit";
   } | null>(null);
+  const [deleteDialog, setDeleteDialog] = useState<{ target: Section; row: Row; label: string } | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState(DEFAULT_STATUS_FILTER);
   const [dateType, setDateType] = useState(DEFAULT_DATE_TYPE);
@@ -64,7 +65,7 @@ export function AccountsPayableApp() {
         const invoiceCount = new Map<string, number>();
         const providerBalance = new Map<string, number>();
         data.facturas.forEach((item) => { invoiceCount.set(item.proveedor_id, (invoiceCount.get(item.proveedor_id) ?? 0) + 1); if (item.estado !== "Pagada") providerBalance.set(item.proveedor_id, (providerBalance.get(item.proveedor_id) ?? 0) + item.saldo_pendiente); });
-        setInvoices(data.facturas.map((item) => ({ id: item.factura_id, supplier: providersById.get(item.proveedor_id)?.nombre_legal || item.proveedor_id, code: item.codigo_factura || item.numero_factura, restaurant: restaurantName.get(item.restaurante_id) || item.restaurante_id, issue: item.fecha_emision, due: item.fecha_vencimiento, amount: item.monto_total, status: item.estado, category: item.categoria, dateCreated: item.fecha_ingreso, paidDate: data.pagos.find((payment) => payment.factura_id === item.factura_id)?.fecha_pago })));
+        setInvoices(data.facturas.map((item) => ({ id: item.factura_id, supplier: providersById.get(item.proveedor_id)?.nombre_legal || item.proveedor_id, code: item.numero_factura || item.codigo_factura, restaurant: restaurantName.get(item.restaurante_id) || item.restaurante_id, issue: item.fecha_emision, due: item.fecha_vencimiento, amount: item.monto_total, paidAmount: item.monto_pagado, pendingBalance: item.saldo_pendiente, status: item.estado, category: item.categoria, dateCreated: item.fecha_ingreso, paidDate: data.pagos.find((payment) => payment.factura_id === item.factura_id)?.fecha_pago })));
         setSupplierRecords(data.proveedores.map((item) => ({ code: item.codigo_proveedor, name: item.nombre_legal, id: item.ruc, invoices: invoiceCount.get(item.proveedor_id) ?? 0, balance: providerBalance.get(item.proveedor_id) ?? 0, bank: [item.banco, item.cuenta_bancaria].filter(Boolean).join(" · ") || "Sin cuenta registrada", state: item.activo ? "Activo" : "Inactivo" })));
         setPaymentRecords(data.pagos.map((item) => ({ ref: item.codigo_pago || item.referencia, supplier: providersById.get(item.proveedor_id)?.nombre_legal || item.proveedor_id, restaurant: restaurantName.get(item.restaurante_id) || item.restaurante_id, date: item.fecha_pago, method: item.metodo_pago, amount: item.monto, status: "Completada" })));
         const latestBalance = new Map<string, number>(); data.prestamo_saldos.forEach((item) => latestBalance.set(item.prestamo_id, item.saldo_final));
@@ -75,7 +76,7 @@ export function AccountsPayableApp() {
       .catch((error) => active && showToast(error instanceof Error ? error.message : "No se pudo conectar con Google Sheets"));
     return () => { active = false; };
   }, []);
-  const pageSize = PAGE_SIZE;
+  const [pageSize, setPageSize] = useState(10);
   const clearInvoiceFilters = () => { setSearch(""); setFilter(DEFAULT_STATUS_FILTER); setDateType(DEFAULT_DATE_TYPE); setDateFrom(""); setDateTo(""); setRestaurantFilter("Todos los restaurantes"); setPage(1); };
   const persistInvoices = async (records: Array<{ supplier: string; restaurant: string; number: string; issue: string; due: string; amount: number; category?: string }>) => {
     const response = await fetch("/api/accounts-payable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "createInvoices", invoices: records }) });
@@ -146,7 +147,7 @@ export function AccountsPayableApp() {
     setSection("Proveedores");
     showToast("Proveedor registrado correctamente");
   };
-  const addPayment = (data: FormData) => {
+  const addPayment = async (data: FormData) => {
     const record = {
       ref: String(data.get("reference")),
       supplier: String(data.get("supplier")),
@@ -156,6 +157,12 @@ export function AccountsPayableApp() {
       amount: Number(data.get("amount")),
       status: "Completada",
     };
+    try {
+      const response = await fetch("/api/accounts-payable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "recordPayment", payment: { facturaRef: String(data.get("invoice")), amount: record.amount, date: record.date, method: record.method, reference: record.ref, bank: String(data.get("bank") || ""), detail: String(data.get("detail") || "") } }) });
+      if (!response.ok) throw new Error((await response.json()).error);
+      const result = await response.json();
+      setInvoices((current) => current.map((item) => item.id === result.facturaId ? { ...item, status: result.estado, paidDate: record.date, amount: item.amount } : item));
+    } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo registrar el pago"); return; }
     setPaymentRecords((current) => [record, ...current]);
     setModal(null);
     setLogs((current) => [
@@ -288,7 +295,7 @@ export function AccountsPayableApp() {
       );
     }
   };
-  const handleRowAction = (target: Section, row: Row, action: RowAction) => {
+  const handleRowAction = async (target: Section, row: Row, action: RowAction) => {
     const label =
       target === "Facturas"
         ? `${row.supplier} · ${row.code}`
@@ -315,29 +322,7 @@ export function AccountsPayableApp() {
       return;
     }
     if (action === "delete") {
-      if (
-        !window.confirm(`¿Eliminar ${label}? Esta acción no se puede deshacer.`)
-      )
-        return;
-      if (target === "Facturas")
-        setInvoices((current) => current.filter((item) => item.id !== row.id));
-      if (target === "Proveedores")
-        setSupplierRecords((current) =>
-          current.filter((item) => item.code !== row.code),
-        );
-      if (target === "Transferencias")
-        setPaymentRecords((current) =>
-          current.filter((item) => item.ref !== row.ref),
-        );
-      if (target === "Préstamos")
-        setLoanRecords((current) =>
-          current.filter((item) => item.number !== row.number),
-        );
-      if (target === "Usuarios y roles")
-        setUsers((current) =>
-          current.filter((item) => item.email !== row.email),
-        );
-      showToast("Registro eliminado");
+      setDeleteDialog({ target, row, label });
       return;
     }
   };
@@ -551,37 +536,20 @@ export function AccountsPayableApp() {
               page={page}
               setPage={setPage}
               pageSize={pageSize}
+              setPageSize={(value) => { setPageSize(value); setPage(1); }}
               onCreate={(kind) => setModal(kind)}
               onExport={
                 section === "Transferencias" ? exportPayments : exportInvoices
               }
               onToast={showToast}
-              onStatus={(id, status) => {
-                setInvoices((current) =>
-                  current.map((item) =>
-                    item.id === id
-                      ? {
-                          ...item,
-                          status: status as InvoiceStatus,
-                          paidDate:
-                            status === "Pagada"
-                              ? new Date().toISOString().slice(0, 10)
-                              : undefined,
-                        }
-                      : item,
-                  ),
-                );
-                setLogs((current) => [
-                  {
-                    who: "María Gutiérrez",
-                    initials: "MG",
-                    action: `Marcó factura como ${status.toLowerCase()}`,
-                    detail: id,
-                    date: "Ahora",
-                  },
-                  ...current,
-                ]);
-                showToast(`Factura marcada como ${status.toLowerCase()}`);
+              onStatus={async (id, status) => {
+                try {
+                  const response = await fetch("/api/accounts-payable", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ facturaId: id, estado: status }) });
+                  if (!response.ok) throw new Error((await response.json()).error);
+                  const result = await response.json();
+                  setInvoices((current) => current.map((item) => item.id === id ? { ...item, status: result.estado as InvoiceStatus, paidAmount: result.monto_pagado, pendingBalance: result.saldo_pendiente, paidDate: result.estado === "Pagada" ? new Date().toISOString().slice(0, 10) : item.paidDate } : item));
+                  showToast(`Factura actualizada a ${result.estado.toLowerCase()}`);
+                } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo actualizar el estado"); }
               }}
               logs={logs}
               onAction={handleRowAction}
@@ -611,6 +579,7 @@ export function AccountsPayableApp() {
           }
         />
       )}
+      {deleteDialog && <DeleteConfirmationCard id={String(deleteDialog.target === "Facturas" ? deleteDialog.row.id : deleteDialog.row.code)} label={deleteDialog.label} onClose={() => setDeleteDialog(null)} onConfirm={async () => { if (deleteDialog.target !== "Facturas") { showToast("La eliminación remota está disponible únicamente para facturas."); setDeleteDialog(null); return; } const response = await fetch("/api/accounts-payable", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ facturaId: deleteDialog.row.id }) }); if (!response.ok) { showToast((await response.json()).error); return; } setInvoices((current) => current.filter((item) => item.id !== deleteDialog.row.id)); setDeleteDialog(null); showToast("Factura eliminada"); }} />}
       {toast && (
         <div className="toast-message" role="status">
           <Check size={17} />
