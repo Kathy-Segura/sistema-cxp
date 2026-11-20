@@ -11,6 +11,10 @@ import {
   X,
 } from "lucide-react";
 import { FormField } from "../forms/FormField";
+import type { Invoice } from "../../types";
+import { money } from "../../utils/formatters";
+import { invoiceCategory, managuaDate, moneyCents } from "../../lib/invoice-balances";
+import { dueDate } from "../../lib/invoice-file-format";
 export function Modal({
   kind,
   onClose,
@@ -19,19 +23,42 @@ export function Modal({
   onPayment,
   onLoan,
   onImport,
-  onTemplate,
+  importErrors,
+  clearImportErrors,
+  paymentInvoices,
+  paymentInvoiceId,
+  restaurants,
 }: {
   kind: "invoice" | "supplier" | "payment" | "loan" | "import";
   onClose: () => void;
-  onInvoice: (data: FormData) => void;
+  onInvoice: (data: FormData) => Promise<void>;
   onSupplier: (data: FormData) => void;
-  onPayment: (data: FormData) => void;
+  onPayment: (data: FormData) => Promise<void>;
   onLoan: (data: FormData) => void;
-  onImport: (file?: File) => void;
-  onTemplate: () => void;
+  onImport: (file?: File) => Promise<void>;
+  importErrors: string[];
+  clearImportErrors: () => void;
+  paymentInvoices: Invoice[];
+  paymentInvoiceId: string;
+  restaurants: string[];
 }) {
   const [file, setFile] = useState<File | undefined>();
   const [dragging, setDragging] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [operationError, setOperationError] = useState("");
+  const [issue, setIssue] = useState("");
+  const [creditDays, setCreditDays] = useState("");
+  const [due, setDue] = useState("");
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState(paymentInvoiceId);
+  const selectedInvoice = paymentInvoices.find((invoice) => invoice.id === selectedInvoiceId);
+  const pendingBalance = selectedInvoice?.pendingBalance ?? selectedInvoice?.amount;
+  const effectiveDue = due || dueDate(issue, Number(creditDays));
+  const category = invoiceCategory(issue, effectiveDue);
+  const amountCents = moneyCents(Number(paymentAmount));
+  const balanceCents = moneyCents(pendingBalance ?? 0);
+  const remainingAfterPayment = amountCents > 0 && amountCents <= balanceCents
+    ? (balanceCents - amountCents) / 100 : undefined;
   const inputRef = useRef<HTMLInputElement>(null);
   const meta = {
     invoice: ["Nueva factura", "Registra una cuenta por pagar de proveedor."],
@@ -40,8 +67,8 @@ export function Modal({
       "Agrega un proveedor al directorio del grupo.",
     ],
     payment: [
-      "Registrar transferencia",
-      "Guarda el método y los detalles del pago.",
+      "Registrar pago",
+      "Abona una parte de la factura o liquida el saldo.",
     ],
     loan: [
       "Nuevo préstamo",
@@ -52,29 +79,47 @@ export function Modal({
       "Importa varias cuentas por pagar desde una plantilla Excel.",
     ],
   }[kind];
+  const run = async (operation: () => Promise<void>) => {
+    if (busy) return;
+    setOperationError("");
+    setBusy(true);
+    try { await operation(); }
+    catch (error) { setOperationError(error instanceof Error ? error.message : "No se pudo completar la operación."); }
+    finally { setBusy(false); }
+  };
+  const downloadTemplate = async () => {
+    const response = await fetch("/api/accounts-payable/template", { cache: "no-store" });
+    if (!response.ok) throw new Error((await response.json()).error || "No se pudo descargar la plantilla.");
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "plantilla-cuentas-por-pagar.xlsx";
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
-    if (kind === "invoice") onInvoice(data);
+    if (kind === "invoice") void run(() => onInvoice(data));
     if (kind === "supplier") onSupplier(data);
-    if (kind === "payment") onPayment(data);
+    if (kind === "payment" && !busy) void run(() => onPayment(data));
     if (kind === "loan") onLoan(data);
   };
   const onDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setDragging(false);
     const selected = event.dataTransfer.files[0];
-    if (selected) setFile(selected);
+    if (selected && !busy) { setFile(selected); clearImportErrors(); setOperationError(""); }
   };
   return (
     <div
       className="modal-backdrop"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (event.target === event.currentTarget && !busy) onClose();
       }}
     >
       <section
-        className="modal-card"
+        className={`modal-card ${["invoice", "payment", "import"].includes(kind) ? "invoice-workflow-card" : ""}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="modal-heading"
@@ -89,19 +134,19 @@ export function Modal({
             className="icon-button modal-close"
             onClick={onClose}
             aria-label="Cerrar"
+            disabled={busy}
           >
             <X size={19} />
           </button>
         </header>
         {kind === "import" ? (
           <div className="modal-body">
-            <button className="template-download" onClick={onTemplate}>
-              <span className="template-icon">
-                <FileSpreadsheet size={20} />
-              </span>
+            <button type="button" className="template-download" disabled={busy}
+              onClick={() => void run(downloadTemplate)}>
+              <span className="template-icon"><FileSpreadsheet size={20} /></span>
               <span>
                 <strong>Descargar plantilla Excel</strong>
-                <small>Usa el formato oficial para evitar errores</small>
+                <small>Incluye la lista actual de restaurantes</small>
               </span>
               <ArrowDownToLine size={17} />
             </button>
@@ -126,9 +171,12 @@ export function Modal({
                 type="file"
                 accept=".xlsx,.xls,.csv"
                 hidden
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                  setFile(e.target.files?.[0])
-                }
+                disabled={busy}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                  setFile(e.target.files?.[0]);
+                  clearImportErrors();
+                  setOperationError("");
+                }}
               />
               <div className="upload-icon">
                 <UploadCloud size={22} />
@@ -144,91 +192,76 @@ export function Modal({
             <div className="import-notes">
               <Check size={15} />
               <span>
-                Las filas se validan antes de agregarse. Las facturas duplicadas
-                se pueden revisar en la tabla.
+                Elige el restaurante de la lista, usa fechas AAAA-MM-DD o DD/MM/AAAA y escribe el monto como número. La categoría se calcula según el plazo.
               </span>
             </div>
+            {operationError && <p role="alert" className="invoice-form-error">{operationError}</p>}
+            {importErrors.length > 0 && (
+              <div role="alert" className="import-notes danger-text">
+                <ul>
+                  {importErrors.slice(0, 10).map((error) => <li key={error}>{error}</li>)}
+                  {importErrors.length > 10 && <li>{importErrors.length - 10} filas adicionales con errores.</li>}
+                </ul>
+              </div>
+            )}
             <footer className="modal-footer">
-              <button className="button-secondary" onClick={onClose}>
+              <button className="button-secondary" disabled={busy} onClick={onClose}>
                 Cancelar
               </button>
               <button
                 className="button-primary"
-                disabled={!file}
-                onClick={() => onImport(file)}
+                disabled={!file || busy}
+                onClick={() => void run(() => onImport(file))}
               >
-                <CloudUpload size={16} /> Importar facturas
+                <CloudUpload size={16} /> {busy ? "Importando…" : "Importar facturas"}
               </button>
             </footer>
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="modal-body">
-            <div className="form-grid">
+            <div className={`form-grid ${kind === "invoice" || kind === "payment" ? "invoice-form-grid" : ""}`}>
               {kind === "invoice" && (
                 <>
-                  <FormField
-                    label="Proveedor"
-                    name="supplier"
-                    required
-                    placeholder="Nombre del proveedor"
-                  />
-                  <FormField
-                    label="No. Factura"
-                    name="number"
-                    required
-                    placeholder="Código o número de factura"
-                  />
-                  <FormField
-                    label="Restaurante"
-                    name="restaurant"
-                    required
-                    select
-                    options={[
-                      "BC LAS COLINAS",
-                      "BC VILLA FONTANA",
-                      "CDP",
-                      "AJI",
-                      "LC",
-                      "DF",
-                    ]}
-                  />
-                  <FormField
-                    label="Monto"
-                    name="amount"
-                    required
-                    type="number"
-                    placeholder="0.00"
-                  />
-                  <FormField
-                    label="Fecha Emisión"
-                    name="issue"
-                    required
-                    type="date"
-                  />
-                  <FormField
-                    label="Fecha de Vencimiento"
-                    name="due"
-                    type="date"
-                  />
-                  <FormField
-                    label="Días de crédito"
-                    name="credit"
-                    type="number"
-                    placeholder="0"
-                  />
-                  <FormField
-                    label="Categoría"
-                    name="category"
-                    select
-                    options={[
-                      "Alimentos",
-                      "Insumos",
-                      "Empaques",
-                      "Servicios",
-                      "Impuestos",
-                      "Otra",
-                    ]}
-                  />
+                  <fieldset className="invoice-form-group form-full">
+                    <legend>Datos de la factura</legend>
+                    <div className="form-grid">
+                      <FormField label="Proveedor" name="supplier" required placeholder="Nombre del proveedor" />
+                      <FormField label="Restaurante" name="restaurant" required select options={restaurants} />
+                      <FormField label="N.º de factura" name="number" required placeholder="Número emitido por el proveedor" />
+                      <div className="form-field">
+                        <label htmlFor="invoice-amount">Monto total (C$) <span className="required-star">*</span></label>
+                        <input id="invoice-amount" name="amount" type="number" min="0.01" step="0.01" placeholder="0.00" required />
+                      </div>
+                    </div>
+                  </fieldset>
+                  <fieldset className="invoice-form-group form-full">
+                    <legend>Fechas y plazo</legend>
+                    <div className="form-grid">
+                      <div className="form-field">
+                        <label htmlFor="invoice-issue">Fecha de emisión <span className="required-star">*</span></label>
+                        <input id="invoice-issue" name="issue" type="date" required value={issue}
+                          onChange={(event) => setIssue(event.target.value)} />
+                      </div>
+                      <div className="form-field">
+                        <label htmlFor="invoice-credit">Días de crédito</label>
+                        <input id="invoice-credit" name="credit" type="number" min="0" step="1"
+                          value={creditDays} onChange={(event) => setCreditDays(event.target.value)} />
+                        <small>Se aplican si no indicas el vencimiento.</small>
+                      </div>
+                      <div className="form-field">
+                        <label htmlFor="invoice-due">Fecha de vencimiento</label>
+                        <input id="invoice-due" name="due" type="date" min={issue || undefined} value={due}
+                          onChange={(event) => setDue(event.target.value)} />
+                        {!due && effectiveDue && <small>Vencimiento calculado: {effectiveDue}</small>}
+                      </div>
+                      <div className="form-field">
+                        <label htmlFor="invoice-category">Categoría</label>
+                        <output id="invoice-category" className="invoice-field-output">
+                          {category === 1 ? "1 · Hasta 30 días" : category === 2 ? "2 · Desde 31 días" : "Se calcula con el plazo"}
+                        </output>
+                      </div>
+                    </div>
+                  </fieldset>
                 </>
               )}
               {kind === "supplier" && (
@@ -281,72 +314,59 @@ export function Modal({
               )}
               {kind === "payment" && (
                 <>
-                  <FormField
-                    label="Proveedor"
-                    name="supplier"
-                    required
-                    placeholder="Proveedor registrado"
-                  />
-                  <FormField
-                    label="Factura asociada"
-                    name="invoice"
-                    required
-                    placeholder="Código de factura"
-                  />
-                  <FormField
-                    label="Restaurante"
-                    name="restaurant"
-                    required
-                    select
-                    options={[
-                      "BC LAS COLINAS",
-                      "BC VILLA FONTANA",
-                      "CDP",
-                      "AJI",
-                      "LC",
-                      "DF",
-                    ]}
-                  />
-                  <FormField
-                    label="Monto pagado (C$)"
-                    name="amount"
-                    required
-                    type="number"
-                    placeholder="0.00"
-                  />
-                  <FormField
-                    label="Método de pago"
-                    name="method"
-                    required
-                    select
-                    options={["Transferencia", "Pago", "Cheque"]}
-                  />
-                  <FormField
-                    label="Fecha del pago"
-                    name="date"
-                    required
-                    type="date"
-                  />
-                  <FormField
-                    label="Referencia / N.º transferencia"
-                    name="reference"
-                    required
-                    placeholder="Referencia bancaria"
-                  />
-                  <FormField
-                    label="Banco de origen"
-                    name="bank"
-                    placeholder="Banco de origen"
-                  />
-                  <div className="form-field form-full">
-                    <label htmlFor="payment-detail">Detalle del pago</label>
-                    <textarea
-                      id="payment-detail"
-                      name="detail"
-                      placeholder="Observaciones o descripción del pago"
-                      rows={3}
-                    />
-                  </div>
+                  {paymentInvoiceId ? (
+                    <input type="hidden" name="invoice" value={selectedInvoiceId} />
+                  ) : (
+                    <div className="form-field form-full">
+                      <label htmlFor="payment-invoice">Factura asociada</label>
+                      <select id="payment-invoice" name="invoice" required value={selectedInvoiceId}
+                        onChange={(event) => { setSelectedInvoiceId(event.target.value); setPaymentAmount(""); setOperationError(""); }}>
+                        <option value="" disabled>{paymentInvoices.length ? "Selecciona una factura" : "No hay facturas con saldo"}</option>
+                        {paymentInvoices.map((invoice) => <option key={invoice.id} value={invoice.id}>
+                          {invoice.id} · N.º {invoice.code} · {invoice.supplier}
+                        </option>)}
+                      </select>
+                    </div>
+                  )}
+                  {selectedInvoice && (
+                    <div className="payment-summary form-full">
+                      <div className="payment-summary-heading">
+                        <strong>N.º {selectedInvoice.code}</strong>
+                        <span>{selectedInvoice.supplier} · {selectedInvoice.restaurant}</span>
+                      </div>
+                      <dl>
+                        <div><dt>Monto total</dt><dd>{money(selectedInvoice.amount)}</dd></div>
+                        <div><dt>Pagado</dt><dd>{money(selectedInvoice.paidAmount ?? 0)}</dd></div>
+                        <div><dt>Saldo pendiente</dt><dd>{money(pendingBalance ?? 0)}</dd></div>
+                      </dl>
+                    </div>
+                  )}
+                  <fieldset className="invoice-form-group form-full">
+                    <legend>Datos del pago</legend>
+                    <div className="form-grid">
+                      <div className="form-field">
+                        <label htmlFor="payment-amount">Monto de este pago <span className="required-star">*</span></label>
+                        <input id="payment-amount" name="amount" type="number" required min="0.01" step="0.01"
+                          max={pendingBalance} placeholder="0.00" value={paymentAmount}
+                          onChange={(event) => setPaymentAmount(event.target.value)} />
+                        {selectedInvoice && <button type="button" className="payment-fill" disabled={busy}
+                          onClick={() => setPaymentAmount(String(pendingBalance))}>Pagar saldo completo</button>}
+                        {remainingAfterPayment !== undefined &&
+                          <small aria-live="polite">Saldo después de este pago: {money(remainingAfterPayment)}</small>}
+                      </div>
+                      <FormField label="Método de pago" name="method" required select options={["Transferencia", "Pago", "Cheque"]} />
+                      <div className="form-field">
+                        <label htmlFor="payment-date">Fecha del pago <span className="required-star">*</span></label>
+                        <input id="payment-date" name="date" required type="date" defaultValue={managuaDate()} />
+                      </div>
+                      <FormField label="Referencia" name="reference" required placeholder="Referencia bancaria o de recibo" />
+                      <FormField label="Banco de origen" name="bank" placeholder="Opcional" />
+                      <div className="form-field">
+                        <label htmlFor="payment-detail">Detalle del pago</label>
+                        <textarea id="payment-detail" name="detail" placeholder="Opcional" rows={2} />
+                      </div>
+                    </div>
+                  </fieldset>
                 </>
               )}
               {kind === "loan" && (
@@ -412,15 +432,17 @@ export function Modal({
                 </>
               )}
             </div>
+            {operationError && <p role="alert" className="invoice-form-error">{operationError}</p>}
             <footer className="modal-footer">
               <button
                 type="button"
                 className="button-secondary"
+                disabled={busy}
                 onClick={onClose}
               >
                 Cancelar
               </button>
-              <button type="submit" className="button-primary">
+              <button type="submit" className="button-primary" disabled={busy || (kind === "payment" && !selectedInvoice) || (kind === "invoice" && !restaurants.length)}>
                 <Check size={16} /> Guardar{" "}
                 {kind === "invoice"
                   ? "factura"

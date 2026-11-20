@@ -21,7 +21,8 @@ import { Overview } from "../components/overview/Overview";
 import { useToast } from "../hooks/useToast";
 import { useInvoiceFilters } from "../hooks/useInvoiceFilters";
 import { PageContent } from "../layout/PageContent";
-import { dueDate, INVOICE_EXPORT_HEADERS, INVOICE_IMPORT_HEADERS, isoDate } from "../lib/invoice-file-format";
+import { createInvoiceExport, dueDate, parseInvoiceWorkbook, type InvoiceFileRow } from "../lib/invoice-file-format";
+import { invoiceBalance, invoiceCategory, managuaDate } from "../lib/invoice-balances";
 
 export function AccountsPayableApp() {
   const [section, setSection] = useState<Section>("Resumen");
@@ -34,6 +35,8 @@ export function AccountsPayableApp() {
   const [modal, setModal] = useState<
     "invoice" | "supplier" | "payment" | "loan" | "import" | null
   >(null);
+  const [paymentInvoiceId, setPaymentInvoiceId] = useState("");
+  const [importErrors, setImportErrors] = useState<string[]>([]);
   const [rowDialog, setRowDialog] = useState<{
     target: Section;
     row: Row;
@@ -60,12 +63,18 @@ export function AccountsPayableApp() {
       .then((data: { facturas: FacturaRecord[]; proveedores: ProveedorRecord[]; pagos: PagoRecord[]; prestamos: PrestamoRecord[]; prestamo_saldos: PrestamoSaldoRecord[]; restaurantes: Row[]; usuarios: Row[]; bitacora: Row[] }) => {
         if (!active) return;
         const restaurantName = new Map(data.restaurantes.map((row) => [String(row.restaurante_id), String(row.nombre)]));
-        setRestaurantOptions([...restaurantName.values()].filter(Boolean));
+        setRestaurantOptions([...new Set(data.restaurantes.map((row) => String(row.nombre ?? "").trim()).filter(Boolean))]);
         const providersById = new Map(data.proveedores.map((item) => [item.proveedor_id, item]));
         const invoiceCount = new Map<string, number>();
         const providerBalance = new Map<string, number>();
         data.facturas.forEach((item) => { invoiceCount.set(item.proveedor_id, (invoiceCount.get(item.proveedor_id) ?? 0) + 1); if (item.estado !== "Pagada") providerBalance.set(item.proveedor_id, (providerBalance.get(item.proveedor_id) ?? 0) + item.saldo_pendiente); });
-        setInvoices(data.facturas.map((item) => ({ id: item.factura_id, supplier: providersById.get(item.proveedor_id)?.nombre_legal || item.proveedor_id, code: item.numero_factura || item.codigo_factura, restaurant: restaurantName.get(item.restaurante_id) || item.restaurante_id, issue: item.fecha_emision, due: item.fecha_vencimiento, amount: item.monto_total, paidAmount: item.monto_pagado, pendingBalance: item.saldo_pendiente, status: item.estado, category: item.categoria, dateCreated: item.fecha_ingreso, paidDate: data.pagos.find((payment) => payment.factura_id === item.factura_id)?.fecha_pago })));
+        const latestPaymentDates = new Map<string, string>();
+        for (const payment of data.pagos) {
+          if (payment.fecha_pago > (latestPaymentDates.get(payment.factura_id) ?? "")) {
+            latestPaymentDates.set(payment.factura_id, payment.fecha_pago);
+          }
+        }
+        setInvoices(data.facturas.map((item) => ({ id: item.factura_id, supplier: providersById.get(item.proveedor_id)?.nombre_legal || item.proveedor_id, code: item.numero_factura || item.codigo_factura, restaurant: restaurantName.get(item.restaurante_id) || item.restaurante_id, issue: item.fecha_emision, due: item.fecha_vencimiento, amount: item.monto_total, paidAmount: item.monto_pagado, pendingBalance: item.saldo_pendiente, status: item.estado, category: item.categoria, dateCreated: item.fecha_ingreso, paidDate: latestPaymentDates.get(item.factura_id) })));
         setSupplierRecords(data.proveedores.map((item) => ({ code: item.codigo_proveedor, name: item.nombre_legal, id: item.ruc, invoices: invoiceCount.get(item.proveedor_id) ?? 0, balance: providerBalance.get(item.proveedor_id) ?? 0, bank: [item.banco, item.cuenta_bancaria].filter(Boolean).join(" · ") || "Sin cuenta registrada", state: item.activo ? "Activo" : "Inactivo" })));
         setPaymentRecords(data.pagos.map((item) => ({ ref: item.codigo_pago || item.referencia, supplier: providersById.get(item.proveedor_id)?.nombre_legal || item.proveedor_id, restaurant: restaurantName.get(item.restaurante_id) || item.restaurante_id, date: item.fecha_pago, method: item.metodo_pago, amount: item.monto, status: "Completada" })));
         const latestBalance = new Map<string, number>(); data.prestamo_saldos.forEach((item) => latestBalance.set(item.prestamo_id, item.saldo_final));
@@ -78,30 +87,32 @@ export function AccountsPayableApp() {
   }, []);
   const [pageSize, setPageSize] = useState(10);
   const clearInvoiceFilters = () => { setSearch(""); setFilter(DEFAULT_STATUS_FILTER); setDateType(DEFAULT_DATE_TYPE); setDateFrom(""); setDateTo(""); setRestaurantFilter("Todos los restaurantes"); setPage(1); };
-  const persistInvoices = async (records: Array<{ supplier: string; restaurant: string; number: string; issue: string; due: string; amount: number; category?: string }>) => {
-    const response = await fetch("/api/accounts-payable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "createInvoices", invoices: records }) });
+  const persistInvoices = async (records: InvoiceFileRow[], origin: "MANUAL" | "IMPORTACION" = "MANUAL") => {
+    const response = await fetch("/api/accounts-payable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "createInvoices", invoices: records, origin }) });
     if (!response.ok) throw new Error((await response.json()).error || "No se pudieron guardar las facturas.");
+    const { ids }: { ids: string[] } = await response.json();
+    const today = managuaDate();
+    const added = records.map(({ number, ...fields }, index): Invoice => ({
+      ...fields, id: ids[index], code: number, paidAmount: 0, pendingBalance: fields.amount,
+      category: invoiceCategory(fields.issue, fields.due),
+      status: invoiceBalance(fields.amount, 0, fields.due, today).estado, dateCreated: today,
+    }));
+    setInvoices((current) => [...added, ...current]);
+    return added;
   };
-  const invoicesFiltered = useInvoiceFilters(invoices, search, filter);
+  const invoicesFiltered = useInvoiceFilters(invoices, search, filter, restaurantFilter, dateType, dateFrom, dateTo);
   const addInvoice = async (data: FormData) => {
     const issue = String(data.get("issue"));
     const creditDays = Number(data.get("credit") || 0);
-    const item: Invoice = {
-      id: `FAC-${String(Date.now()).slice(-5)}`,
+    const fields: InvoiceFileRow = {
       supplier: String(data.get("supplier")),
-      code: String(data.get("number")),
+      number: String(data.get("number")),
       restaurant: String(data.get("restaurant")),
       issue,
       due: String(data.get("due") || dueDate(issue, creditDays)),
       amount: Number(data.get("amount")),
-      status: "Pendiente",
-      category: "General",
-      dateCreated: new Date().toISOString().slice(0, 10),
     };
-    try {
-      await persistInvoices([{ supplier: item.supplier, restaurant: item.restaurant, number: item.code, issue: item.issue, due: item.due, amount: item.amount, category: item.category }]);
-    } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo guardar la factura"); return; }
-    setInvoices((current) => [item, ...current]);
+    const [item] = await persistInvoices([fields]);
     setLogs((current) => [
       {
         who: "María Gutiérrez",
@@ -148,35 +159,46 @@ export function AccountsPayableApp() {
     showToast("Proveedor registrado correctamente");
   };
   const addPayment = async (data: FormData) => {
-    const record = {
-      ref: String(data.get("reference")),
-      supplier: String(data.get("supplier")),
-      restaurant: String(data.get("restaurant")),
+    const invoice = invoices.find((item) => item.id === data.get("invoice"));
+    if (!invoice) throw new Error("Selecciona la factura que deseas abonar.");
+    const payment = {
+      facturaRef: invoice.id,
+      reference: String(data.get("reference")),
       date: String(data.get("date")),
       method: String(data.get("method")),
       amount: Number(data.get("amount")),
-      status: "Completada",
+      bank: String(data.get("bank") || ""),
+      detail: String(data.get("detail") || ""),
     };
     try {
-      const response = await fetch("/api/accounts-payable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "recordPayment", payment: { facturaRef: String(data.get("invoice")), amount: record.amount, date: record.date, method: record.method, reference: record.ref, bank: String(data.get("bank") || ""), detail: String(data.get("detail") || "") } }) });
+      const response = await fetch("/api/accounts-payable", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "recordPayment", payment }),
+      });
       if (!response.ok) throw new Error((await response.json()).error);
-      const result = await response.json();
-      setInvoices((current) => current.map((item) => item.id === result.facturaId ? { ...item, status: result.estado, paidDate: record.date, amount: item.amount } : item));
-    } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo registrar el pago"); return; }
-    setPaymentRecords((current) => [record, ...current]);
-    setModal(null);
-    setLogs((current) => [
-      {
-        who: "María Gutiérrez",
-        initials: "MG",
-        action: "Registró una transferencia",
-        detail: `${record.ref} · ${record.supplier}`,
-        date: "Ahora",
-      },
-      ...current,
-    ]);
-    setSection("Transferencias");
-    showToast("Transferencia registrada correctamente");
+      const result: { facturaId: string; estado: InvoiceStatus; monto_pagado: number; saldo_pendiente: number; payment: PagoRecord; alreadyRecorded: boolean } = await response.json();
+      setInvoices((current) => current.map((item) => item.id === result.facturaId ? {
+        ...item, status: result.estado, paidAmount: result.monto_pagado,
+        pendingBalance: result.saldo_pendiente,
+        paidDate: (item.paidDate ?? "") > result.payment.fecha_pago ? item.paidDate : result.payment.fecha_pago,
+      } : item));
+      if (!result.alreadyRecorded) {
+        setPaymentRecords((current) => [{
+          ref: result.payment.codigo_pago, supplier: invoice.supplier, restaurant: invoice.restaurant,
+          date: result.payment.fecha_pago, method: result.payment.metodo_pago,
+          amount: result.payment.monto, status: "Completada",
+        }, ...current]);
+        setLogs((current) => [{
+          who: result.payment.registrado_por, initials: "SI", action: "Registró un pago",
+          detail: `${invoice.id} · ${result.payment.referencia}`, date: result.payment.registrado_en,
+        }, ...current]);
+      }
+      setModal(null);
+      showToast(result.alreadyRecorded ? "Ese pago ya estaba registrado." :
+        result.estado === "Pagada" ? "Pago registrado. Factura liquidada." : `Abono registrado. Factura ${result.estado.toLowerCase()}.`);
+    } catch (error) {
+      throw error instanceof Error ? error : new Error("No se pudo registrar el pago.");
+    }
   };
   const addLoan = (data: FormData) => {
     const record = {
@@ -205,94 +227,22 @@ export function AccountsPayableApp() {
   };
   const importFile = async (file?: File) => {
     if (!file) return;
+    setImportErrors([]);
     try {
-      const workbook = XLSX.read(await file.arrayBuffer(), {
-        type: "array",
-        cellDates: true,
-      });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
-        defval: "",
-      });
-      const imported = rows
-        .map((row, index) => {
-          const normalized: Record<string, unknown> = {};
-          Object.entries(row).forEach(([key, value]) => {
-            normalized[
-              key
-                .toLowerCase()
-                .trim()
-                .normalize("NFD")
-                .replace(/[\u0300-\u036f]/g, "")
-            ] = value;
-          });
-          const pick = (...keys: string[]) => {
-            for (const key of keys)
-              if (normalized[key] !== undefined && normalized[key] !== "")
-                return normalized[key];
-            return "";
-          };
-          const supplier = String(pick("proveedor", "supplier"));
-          const code = String(
-            pick(
-              "no. factura",
-              "no factura",
-              "numero de factura",
-              "factura",
-              "codigo",
-            ),
-          );
-          const amount = Number(
-            String(pick("monto", "importe", "amount")).replace(/[^\d.-]/g, ""),
-          );
-          const restaurant = String(pick("restaurante", "restaurant"));
-          if (!supplier || !code || !Number.isFinite(amount) || amount <= 0)
-            return null;
-          const rawDate = pick("fecha emision", "fecha de emision", "emision");
-          const dateText = isoDate(rawDate);
-          const rawDue = pick("fecha de vencimiento", "vencimiento");
-          const creditDays = Number(pick("dias de credito", "dias credito", "credit days") || 0);
-          const dueText = isoDate(rawDue) || dueDate(dateText, creditDays);
-          return {
-            id: `FAC-${code}-${index}`,
-            supplier,
-            code,
-            restaurant: restaurant || "CDP",
-            issue: dateText,
-            due: dueText,
-            amount,
-            status: "Pendiente",
-            category: String(pick("categoria", "category") || "General"),
-          } as Invoice;
-        })
-        .filter((item): item is Invoice => item !== null);
-      if (!imported.length) {
-        showToast(
-          "No se encontraron filas válidas. Revisa proveedor, factura y monto.",
-        );
+      if (file.size > 10 * 1024 * 1024) throw new Error("El archivo supera el límite de 10 MB.");
+      const { rows, errors } = parseInvoiceWorkbook(await file.arrayBuffer(), restaurantOptions);
+      if (errors.length) {
+        setImportErrors(errors);
         return;
       }
-      await persistInvoices(imported.map((item) => ({ supplier: item.supplier, restaurant: item.restaurant, number: item.code, issue: item.issue, due: item.due, amount: item.amount, category: item.category })));
-      setInvoices((current) => [...imported, ...current]);
-      setLogs((current) => [
-        {
-          who: "María Gutiérrez",
-          initials: "MG",
-          action: `Importó ${imported.length} facturas`,
-          detail: file.name,
-          date: "Ahora",
-        },
-        ...current,
-      ]);
+      if (!rows.length) throw new Error("Agrega al menos una factura debajo de los encabezados.");
+      await persistInvoices(rows, "IMPORTACION");
       setModal(null);
       setSection("Facturas");
-      showToast(
-        `${imported.length} facturas importadas; ${rows.length - imported.length} filas omitidas`,
-      );
-    } catch {
-      showToast(
-        "No se pudo leer el archivo. Intenta con una plantilla XLSX válida.",
-      );
+      setPage(1);
+      showToast(`${rows.length} facturas importadas`);
+    } catch (error) {
+      setImportErrors([error instanceof Error ? error.message : "No se pudo importar el archivo."]);
     }
   };
   const handleRowAction = async (target: Section, row: Row, action: RowAction) => {
@@ -341,7 +291,7 @@ export function AccountsPayableApp() {
       setInvoices((current) =>
         current.map((item) =>
           matches(item as unknown as Row)
-            ? ({ ...item, ...updated } as Invoice)
+            ? ({ ...item, ...updated, category: invoiceCategory(String(updated.issue), String(updated.due)) } as Invoice)
             : item,
         ),
       );
@@ -365,16 +315,7 @@ export function AccountsPayableApp() {
     showToast("Cambios guardados correctamente");
   };
   const exportInvoices = () => {
-    const data = invoicesFiltered.map((row) => Object.fromEntries([
-      [INVOICE_EXPORT_HEADERS[0], row.supplier], [INVOICE_EXPORT_HEADERS[1], row.restaurant], [INVOICE_EXPORT_HEADERS[2], row.code], [INVOICE_EXPORT_HEADERS[3], row.issue], [INVOICE_EXPORT_HEADERS[4], row.due], [INVOICE_EXPORT_HEADERS[5], row.amount], [INVOICE_EXPORT_HEADERS[6], row.status], [INVOICE_EXPORT_HEADERS[7], row.category],
-    ]));
-    const book = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(
-      book,
-      XLSX.utils.json_to_sheet(data),
-      "Facturas",
-    );
-    XLSX.writeFile(book, "cuentas-por-pagar.xlsx");
+    XLSX.writeFile(createInvoiceExport(invoicesFiltered), "cuentas-por-pagar.xlsx");
     showToast("Reporte Excel descargado");
   };
   const exportPayments = () => {
@@ -397,14 +338,9 @@ export function AccountsPayableApp() {
     XLSX.writeFile(book, "transferencias.xlsx");
     showToast("Reporte de transferencias descargado");
   };
-  const downloadTemplate = () => {
-    const book = XLSX.utils.book_new();
-    const sheet = XLSX.utils.aoa_to_sheet([
-      [...INVOICE_IMPORT_HEADERS],
-    ]);
-    XLSX.utils.book_append_sheet(book, sheet, "Cuentas por pagar");
-    XLSX.writeFile(book, "plantilla-cuentas-por-pagar.xlsx");
-    showToast("Plantilla Excel descargada");
+  const openImport = () => {
+    setImportErrors([]);
+    setModal("import");
   };
 
   return (
@@ -506,12 +442,12 @@ export function AccountsPayableApp() {
               invoices={invoices}
               onNavigate={setSection}
               onCreate={() => setModal("invoice")}
-              onImport={() => setModal("import")}
+              onImport={openImport}
             />
           ) : (
             <SectionContent
               section={section}
-              invoices={invoices}
+              invoices={invoicesFiltered}
               suppliers={supplierRecords}
               payments={paymentRecords}
               loans={loanRecords}
@@ -537,19 +473,18 @@ export function AccountsPayableApp() {
               setPage={setPage}
               pageSize={pageSize}
               setPageSize={(value) => { setPageSize(value); setPage(1); }}
-              onCreate={(kind) => setModal(kind)}
+              onCreate={(kind) => {
+                if (kind === "import") return openImport();
+                if (kind === "payment") setPaymentInvoiceId("");
+                setModal(kind);
+              }}
               onExport={
                 section === "Transferencias" ? exportPayments : exportInvoices
               }
               onToast={showToast}
-              onStatus={async (id, status) => {
-                try {
-                  const response = await fetch("/api/accounts-payable", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ facturaId: id, estado: status }) });
-                  if (!response.ok) throw new Error((await response.json()).error);
-                  const result = await response.json();
-                  setInvoices((current) => current.map((item) => item.id === id ? { ...item, status: result.estado as InvoiceStatus, paidAmount: result.monto_pagado, pendingBalance: result.saldo_pendiente, paidDate: result.estado === "Pagada" ? new Date().toISOString().slice(0, 10) : item.paidDate } : item));
-                  showToast(`Factura actualizada a ${result.estado.toLowerCase()}`);
-                } catch (error) { showToast(error instanceof Error ? error.message : "No se pudo actualizar el estado"); }
+              onPay={(id) => {
+                setPaymentInvoiceId(id);
+                setModal("payment");
               }}
               logs={logs}
               onAction={handleRowAction}
@@ -566,12 +501,17 @@ export function AccountsPayableApp() {
           onPayment={addPayment}
           onLoan={addLoan}
           onImport={importFile}
-          onTemplate={downloadTemplate}
+          importErrors={importErrors}
+          clearImportErrors={() => setImportErrors([])}
+          paymentInvoices={invoices.filter((item) => (item.pendingBalance ?? item.amount) > 0)}
+          paymentInvoiceId={paymentInvoiceId}
+          restaurants={restaurantOptions}
         />
       )}
       {rowDialog && (
         <RecordActionModal
           row={rowDialog.row}
+          invoice={rowDialog.target === "Facturas"}
           mode={rowDialog.mode}
           onClose={() => setRowDialog(null)}
           onSave={(updated) =>

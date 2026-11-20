@@ -25,3 +25,26 @@
 .delete-card-icon{width:46px;height:46px;display:grid;place-items:center;border-radius:12px;background:#fff1ef;color:#be5d50;margin-bottom:14px}
 .delete-confirmation-input{width:100%;height:40px;margin-top:14px;border:1px solid #dfe7e3;border-radius:6px;padding:0 10px;color:#3f5048}
 .delete-confirm-button{background:#b94f46;border-color:#a9473f}.delete-confirm-button:hover{background:#a5423a}
+
+.invoice-payment-action{color:var(--primary);background:var(--accent);flex-shrink:0}
+.invoice-payment-action:hover{background:#d9e9fd;color:#215295}
+.invoice-workflow-card .modal-header h2{font-size:21px}
+.invoice-workflow-card .modal-header p{font-size:12px;line-height:1.45}
+.invoice-form-grid{gap:18px}
+.invoice-form-group{min-width:0;margin:0;padding:14px 16px 16px;border:1px solid var(--border);border-radius:9px}
+.invoice-form-group legend{padding:0 6px;margin-left:-2px;font-weight:700;color:var(--foreground);font-size:13px}
+.invoice-workflow-card .form-field label,.invoice-field-output{font-size:12px}
+.invoice-workflow-card .form-field input,.invoice-workflow-card .form-field select,.invoice-workflow-card .form-field textarea{min-height:40px;font-size:13px}
+.invoice-workflow-card .form-field textarea{height:auto;padding-block:9px}
+.invoice-workflow-card .form-field small{font-size:11px;line-height:1.4;color:var(--muted-foreground)}
+.invoice-field-output{min-height:40px;display:flex;align-items:center;padding:0 10px;background:var(--muted);color:var(--foreground);border-radius:6px}
+.payment-summary{display:grid;gap:12px;padding:14px 16px;border:1px solid var(--border);border-radius:9px;background:var(--muted)}
+.payment-summary-heading{display:grid;gap:3px;color:var(--foreground)}
+.payment-summary-heading span{font-size:11px;color:var(--muted-foreground)}
+.payment-summary dl{display:flex;flex-wrap:wrap;gap:10px 24px;margin:0}
+.payment-summary dt{font-size:11px;color:var(--muted-foreground)}
+.payment-summary dd{margin:3px 0 0;font-size:14px;font-weight:700;color:var(--foreground);font-variant-numeric:tabular-nums}
+.payment-fill{border:0;background:none;padding:3px 0;align-self:flex-start;color:var(--accent-foreground);font-weight:600;font-size:11px;text-align:left}
+.payment-fill:hover{text-decoration:underline}
+.invoice-form-error{padding:10px 12px;border-radius:6px;background:#fef1ef;color:#9d3a31;font-size:12px;line-height:1.4}
+@media(max-width:600px){.invoice-workflow-card .modal-body{padding:15px 17px}.invoice-form-group{padding:10px 12px}.payment-summary dl{gap:8px 16px}}

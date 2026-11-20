@@ -1,5 +1,14 @@
 import { NextResponse } from "next/server";
 import { AccountsPayableRepository } from "@/lib/accounts-payable-repository";
+import { moneyCents } from "@/lib/invoice-balances";
+import { isoDate } from "@/utils/formatters";
+
+let pendingWrite = Promise.resolve();
+function write<T>(operation: () => Promise<T>) {
+  const result = pendingWrite.then(operation);
+  pendingWrite = result.then(() => {}, () => {});
+  return result;
+}
 
 export const dynamic = "force-dynamic";
 
@@ -17,13 +26,34 @@ export async function POST(request: Request) {
     const body = await request.json();
     if (body.action === "recordPayment") {
       const payment = body.payment ?? {};
-      if (!String(payment.facturaRef ?? "") || !/^\d{4}-\d{2}-\d{2}$/.test(String(payment.date ?? "")) || !Number.isFinite(Number(payment.amount)) || Number(payment.amount) <= 0) return NextResponse.json({ error: "Pago inválido." }, { status: 400 });
-      return NextResponse.json(await new AccountsPayableRepository().recordPayment({ facturaRef: String(payment.facturaRef), amount: Number(payment.amount), date: String(payment.date), method: String(payment.method || "Pago"), reference: String(payment.reference || ""), bank: String(payment.bank || ""), detail: String(payment.detail || "") }));
+      const input = {
+        facturaRef: String(payment.facturaRef ?? "").trim(),
+        amount: Number(payment.amount),
+        date: isoDate(payment.date),
+        method: String(payment.method || "Pago"),
+        reference: String(payment.reference ?? "").trim(),
+        bank: String(payment.bank ?? "").trim(),
+        detail: String(payment.detail ?? "").trim(),
+      };
+      if (!input.facturaRef || !input.date || !(moneyCents(input.amount) > 0) || !input.reference ||
+          !["Transferencia", "Pago", "Cheque"].includes(input.method)) {
+        return NextResponse.json({ error: "Indica una factura, fecha, método, referencia y monto positivo con hasta dos decimales." }, { status: 400 });
+      }
+      return NextResponse.json(await write(() => new AccountsPayableRepository().recordPayment(input)));
     }
     if (body.action !== "createInvoices" || !Array.isArray(body.invoices) || !body.invoices.length) return NextResponse.json({ error: "Solicitud de facturas inválida." }, { status: 400 });
-    const invoices = body.invoices.map((invoice: Record<string, unknown>) => ({ supplier: String(invoice.supplier ?? "").trim(), restaurant: String(invoice.restaurant ?? "").trim(), number: String(invoice.number ?? "").trim(), issue: String(invoice.issue ?? ""), due: String(invoice.due ?? ""), amount: Number(invoice.amount), category: String(invoice.category ?? "General"), description: String(invoice.description ?? "") }));
-    if (invoices.some((invoice: { supplier: string; restaurant: string; number: string; issue: string; due: string; amount: number }) => !invoice.supplier || !invoice.restaurant || !invoice.number || !/^\d{4}-\d{2}-\d{2}$/.test(invoice.issue) || !/^\d{4}-\d{2}-\d{2}$/.test(invoice.due) || !Number.isFinite(invoice.amount) || invoice.amount <= 0)) return NextResponse.json({ error: "Cada factura requiere proveedor, restaurante, número, fechas ISO y monto positivo." }, { status: 400 });
-    const ids = await new AccountsPayableRepository().createInvoices(invoices);
+    const invoices = body.invoices.map((invoice: Record<string, unknown>) => ({
+      supplier: String(invoice.supplier ?? "").trim(), restaurant: String(invoice.restaurant ?? "").trim(),
+      number: String(invoice.number ?? "").trim(), issue: isoDate(invoice.issue), due: isoDate(invoice.due),
+      amount: Number(invoice.amount),
+    }));
+    if (invoices.some((invoice: { supplier: string; restaurant: string; number: string; issue: string; due: string; amount: number }) =>
+      !invoice.supplier || !invoice.restaurant || !invoice.number || !isoDate(invoice.issue) ||
+      !isoDate(invoice.due) || invoice.due < invoice.issue || !(moneyCents(invoice.amount) > 0))) {
+      return NextResponse.json({ error: "Revisa proveedor, restaurante, número, fechas y monto de las facturas." }, { status: 400 });
+    }
+    const origin = body.origin === "IMPORTACION" || invoices.length > 1 ? "IMPORTACION" : "MANUAL";
+    const ids = await write(() => new AccountsPayableRepository().createInvoices(invoices, origin));
     return NextResponse.json({ created: ids.length, ids }, { status: 201 });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "No se pudieron guardar las facturas." }, { status: 500 });
@@ -34,7 +64,7 @@ export async function DELETE(request: Request) {
   try {
     const { facturaId } = await request.json();
     if (!/^FAC-\d+$/.test(String(facturaId))) return NextResponse.json({ error: "ID de factura inválido." }, { status: 400 });
-    await new AccountsPayableRepository().deleteInvoice(String(facturaId));
+    await write(() => new AccountsPayableRepository().deleteInvoice(String(facturaId)));
     return NextResponse.json({ deleted: true });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "No se pudo eliminar la factura." }, { status: 500 });

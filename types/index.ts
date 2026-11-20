@@ -1,7 +1,8 @@
 export type Section = "Resumen" | "Facturas" | "Proveedores" | "Transferencias" | "Préstamos" | "Bitácora" | "Usuarios y roles" | "Mi perfil";
 export type InvoiceStatus = "Pendiente" | "Vencida" | "Pagada";
+export type InvoiceCategory = 1 | 2;
 export type Currency = "NIO" | "USD";
-export type Invoice = { id: string; supplier: string; code: string; restaurant: string; issue: string; due: string; amount: number; paidAmount?: number; pendingBalance?: number; status: InvoiceStatus; category: string; dateCreated?: string; paidDate?: string };
+export type Invoice = { id: string; supplier: string; code: string; restaurant: string; issue: string; due: string; amount: number; paidAmount?: number; pendingBalance?: number; status: InvoiceStatus; category?: InvoiceCategory; dateCreated?: string; paidDate?: string };
 export type Row = Record<string, string | number>;
 export type RowAction = "view" | "edit" | "delete";
 export type ModalKind = "invoice" | "supplier" | "payment" | "loan" | "import";
@@ -12,7 +13,7 @@ export interface FacturaRecord {
   factura_id: string; codigo_factura: string; proveedor_id: string; restaurante_id: string;
   numero_factura: string; fecha_ingreso: string; fecha_emision: string; fecha_vencimiento: string;
   moneda: Currency; monto_total: number; monto_pagado: number; saldo_pendiente: number;
-  estado: InvoiceStatus; categoria: string;
+  estado: InvoiceStatus; categoria?: InvoiceCategory;
   origen_carga: string; creado_por: string; creado_en: string; actualizado_por: string; actualizado_en: string;
 }
 export interface ProveedorRecord { proveedor_id: string; codigo_proveedor: string; nombre_legal: string; nombre_comercial: string; ruc: string; telefono: string; email: string; banco: string; cuenta_bancaria: string; moneda_preferida: Currency; activo: boolean; creado_por: string; creado_en: string; actualizado_en: string; }

@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import type { Section, Invoice, Row } from "../../types";
 import { sectionsMeta } from "../../constants/section-meta";
-import { money, toIsoDate } from "../../utils/formatters";
+import { money } from "../../utils/formatters";
 import { InvoiceTable } from "../tables/InvoiceTable";
 import { StatusBadge } from "../tables/StatusBadge";
 import { Pagination } from "../tables/Pagination";
@@ -27,7 +27,7 @@ export function SectionContent({
   section, invoices, suppliers, payments, loans, users, search, setSearch, filter,
   setFilter, dateType, setDateType, dateFrom, setDateFrom, dateTo, setDateTo,
   restaurantFilter, setRestaurantFilter, restaurantOptions, onClearFilters, page,
-  setPage, pageSize, setPageSize, onCreate, onExport, onToast, onStatus, logs, onAction,
+  setPage, pageSize, setPageSize, onCreate, onExport, onToast, onPay, logs, onAction,
 }: {
   section: Section;
   invoices: Invoice[];
@@ -58,7 +58,7 @@ export function SectionContent({
   ) => void;
   onExport: () => void;
   onToast: (value: string) => void;
-  onStatus: (id: string, status: string) => void;
+  onPay: (id: string) => void;
   logs: Row[];
   onAction: (
     section: Section,
@@ -74,27 +74,8 @@ export function SectionContent({
     section === "Facturas" ||
     section === "Proveedores" ||
     section === "Transferencias";
-  const filteredInvoices = invoices.filter((item) => {
-    const dateValue =
-      dateType === "Pago"
-        ? item.paidDate
-        : dateType === "Emisión"
-          ? item.issue
-          : item.dateCreated || item.issue;
-    const iso = toIsoDate(dateValue);
-    return (
-      `${item.supplier} ${item.code} ${item.restaurant}`
-        .toLowerCase()
-        .includes(search.toLowerCase()) &&
-      (filter === "Todos los estados" || item.status === filter) &&
-      (restaurantFilter === "Todos los restaurantes" ||
-        item.restaurant === restaurantFilter) &&
-      (!dateFrom || (iso && iso >= dateFrom)) &&
-      (!dateTo || (iso && iso <= dateTo))
-    );
-  });
   let rows: Row[] = [];
-  if (section === "Facturas") rows = filteredInvoices;
+  if (section === "Facturas") rows = invoices;
   if (section === "Proveedores")
     rows = suppliers.filter((row) =>
       `${row.name} ${row.code} ${row.id}`
@@ -259,7 +240,7 @@ export function SectionContent({
                 <ChevronDown size={14} />
               </label>
               <button className="filter-button" onClick={onClearFilters}>
-                <X size={15} /> Limpiar filtros
+                <X size={15} /> Limpiar
               </button>
             </>
           ) : (
@@ -281,7 +262,7 @@ export function SectionContent({
         <div className="panel table-panel">
           <InvoiceTable
             invoices={visibleRows as unknown as Invoice[]}
-            onStatus={onStatus}
+            onPay={onPay}
             onAction={(row, action) => onAction(section, row, action)}
           />
           <Pagination

@@ -20,7 +20,7 @@ export function Overview({
 }) {
   const pending = invoices
     .filter((item) => item.status !== "Pagada")
-    .reduce((sum, item) => sum + item.amount, 0);
+    .reduce((sum, item) => sum + (item.pendingBalance ?? item.amount), 0);
   const overdue = invoices.filter((item) => item.status === "Vencida");
   const bars = [34, 52, 43, 67, 54, 79, 57, 68, 47, 75, 61, 89];
   return (
@@ -264,7 +264,6 @@ export function Overview({
         <InvoiceTable
           invoices={invoices.slice(0, 5)}
           compact
-          onStatus={() => {}}
         />
       </section>
       <div className="bottom-grid">
