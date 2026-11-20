@@ -1,6 +1,6 @@
 "use client";
 import type React from "react";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import {
   ArrowDownToLine,
@@ -15,8 +15,8 @@ import type { Invoice } from "../../types";
 import { PAYMENT_METHODS } from "../../types";
 import { money } from "../../utils/formatters";
 import { invoiceCategory, invoiceCreditDays, managuaDate, moneyCents } from "../../lib/invoice-balances";
-import { dueDate, INVOICE_IMPORT_HEADERS, parseInvoiceWorkbook, type InvoiceFileRow } from "../../lib/invoice-file-format";
-import { invoiceNumberKey } from "../../lib/invoice-identity";
+import { downloadInvoiceDuplicates, dueDate, findInvoiceDuplicates, INVOICE_IMPORT_HEADERS, parseInvoiceWorkbook, type InvoiceFileRow } from "../../lib/invoice-file-format";
+import { SERVICE_TYPES } from "../../lib/invoice-identity";
 
 const PREVIEW_PAGE_SIZE = 8;
 export function Modal({
@@ -51,10 +51,14 @@ export function Modal({
   const [busy, setBusy] = useState(false);
   const [operationError, setOperationError] = useState("");
   const [issue, setIssue] = useState("");
+  const [documentKind, setDocumentKind] = useState("Factura");
   const [creditDays, setCreditDays] = useState("");
   const [due, setDue] = useState("");
   const [paymentAmount, setPaymentAmount] = useState("");
   const [selectedInvoiceId, setSelectedInvoiceId] = useState(paymentInvoiceId);
+  const duplicates = useMemo(() => preview ? findInvoiceDuplicates(preview.rows, preview.rowNumbers, registeredInvoices) : [],
+    [preview, registeredInvoices]);
+  const previewErrors = [...duplicates.map(({ sourceRow, reason }) => `Fila ${sourceRow}: ${reason}`), ...(preview?.errors ?? [])];
   const selectedInvoice = paymentInvoices.find((invoice) => invoice.id === selectedInvoiceId);
   const pendingBalance = selectedInvoice?.pendingBalance ?? selectedInvoice?.amount;
   const effectiveDue = due || dueDate(issue, Number(creditDays));
@@ -112,19 +116,6 @@ export function Modal({
       if (!parsed.rows.length && !parsed.errors.length) {
         throw new Error("Agrega al menos una factura debajo de los encabezados.");
       }
-      const registered = new Set(registeredInvoices.map((invoice) => invoiceNumberKey(invoice.supplier, invoice.code)));
-      const seen = new Map<string, number>();
-      parsed.rows.forEach((row, index) => {
-        const key = invoiceNumberKey(row.supplier, row.number);
-        const rowNumber = parsed.rowNumbers[index];
-        const firstRow = seen.get(key);
-        if (registered.has(key)) {
-          parsed.errors.push(`Fila ${rowNumber}: ${row.supplier} ya tiene la factura N.º ${row.number} registrada.`);
-        } else if (firstRow !== undefined) {
-          parsed.errors.push(`Fila ${rowNumber}: la factura N.º ${row.number} de ${row.supplier} se repite en la fila ${firstRow}.`);
-        }
-        seen.set(key, firstRow ?? rowNumber);
-      });
       setPreview(parsed);
     });
   };
@@ -136,7 +127,7 @@ export function Modal({
     if (kind === "payment" && !busy) void run(() => onPayment(data));
     if (kind === "loan") onLoan(data);
   };
-  const onDrop = (event: React.DragEvent<HTMLDivElement>) => {
+  const onDrop = (event: React.DragEvent<HTMLButtonElement>) => {
     event.preventDefault();
     setDragging(false);
     const selected = event.dataTransfer.files[0];
@@ -183,8 +174,22 @@ export function Modal({
               </span>
               <ArrowDownToLine size={17} />
             </button>
-            <div
-              className={`drop-zone ${dragging ? "drop-active" : ""}`}
+            <input
+              ref={inputRef}
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              hidden
+              disabled={busy}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                const selected = e.target.files?.[0];
+                e.currentTarget.value = "";
+                if (selected) void previewFile(selected);
+              }}
+            />
+            <button
+              type="button"
+              disabled={busy}
+              className={`drop-zone invoice-drop-zone ${dragging ? "drop-active" : ""}`}
               onDragOver={(e) => {
                 e.preventDefault();
                 setDragging(true);
@@ -192,47 +197,26 @@ export function Modal({
               onDragLeave={() => setDragging(false)}
               onDrop={onDrop}
               onClick={() => inputRef.current?.click()}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ")
-                  inputRef.current?.click();
-              }}
             >
-              <input
-                ref={inputRef}
-                type="file"
-                accept=".xlsx,.xls,.csv"
-                hidden
-                disabled={busy}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                  const selected = e.target.files?.[0];
-                  e.currentTarget.value = "";
-                  if (selected) void previewFile(selected);
-                }}
-              />
-              <div className="upload-icon">
-                <UploadCloud size={22} />
-              </div>
-              <strong>{file ? file.name : "Arrastra tu archivo aquí"}</strong>
-              <span>
-                {file
-                  ? `${(file.size / 1024).toFixed(1)} KB · selecciona otro archivo para reemplazarlo`
-                  : "o haz clic para buscar en tu equipo"}
+              <span className="upload-icon"><UploadCloud size={18} aria-hidden="true" /></span>
+              <span className="invoice-drop-copy">
+                <strong>{file ? file.name : "Arrastra tu archivo aquí"}</strong>
+                <span>{file ? "Haz clic para reemplazarlo" : "o busca en tu equipo"}</span>
               </span>
               <small>Excel .xlsx, .xls o .csv · máximo 10 MB</small>
-            </div>
+            </button>
             <div className="import-notes">
               <Check size={15} />
               <span>
                 Elige el restaurante de la lista, usa fechas AAAA-MM-DD o DD/MM/AAAA y escribe el monto como número. La categoría se calcula según el plazo.
+                Para un servicio, escribe Renta, Préstamo u Otro en No. Factura. Puedes añadir una referencia, por ejemplo «Renta: contrato 14».
               </span>
             </div>
             {operationError && <p role="alert" className="invoice-form-error">{operationError}</p>}
             {preview && (
               <section className="invoice-import-preview" aria-labelledby="invoice-preview-heading">
                 <h3 id="invoice-preview-heading">Vista previa</h3>
-                <p>{preview.sheetName} · {preview.rows.length} filas legibles{preview.errors.length ? ` · ${preview.errors.length} incidencias` : ""}</p>
+                <p>{preview.sheetName} · {preview.rows.length} filas legibles{previewErrors.length ? ` · ${previewErrors.length} incidencias` : ""}</p>
                 {previewRows.length > 0 && <>
                   <div className="table-scroll">
                     <table className="data-table" aria-label="Facturas del archivo">
@@ -255,22 +239,28 @@ export function Modal({
                 </>}
               </section>
             )}
-            {!!preview?.errors.length && (
+            {!!previewErrors.length && (
               <div role="alert" className="import-notes danger-text">
                 <ul>
-                  {preview.errors.slice(0, 10).map((error) => <li key={error}>{error}</li>)}
-                  {preview.errors.length > 10 && <li>{preview.errors.length - 10} incidencias adicionales.</li>}
+                  {previewErrors.slice(0, 10).map((error) => <li key={error}>{error}</li>)}
+                  {previewErrors.length > 10 && <li>{previewErrors.length - 10} incidencias adicionales.</li>}
                 </ul>
               </div>
             )}
-            <footer className="modal-footer">
+            <footer className="modal-footer import-actions">
+              {duplicates.length > 0 && (
+                <button type="button" className="button-secondary import-download-duplicates" disabled={busy}
+                  onClick={() => void run(async () => downloadInvoiceDuplicates(duplicates))}>
+                  <ArrowDownToLine size={16} /> Descargar duplicadas ({duplicates.length})
+                </button>
+              )}
               <button className="button-secondary" disabled={busy} onClick={onClose}>
                 Cancelar
               </button>
               <button
                 className="button-primary"
-                disabled={busy || !preview?.rows.length || !!preview.errors.length}
-                onClick={() => { if (preview?.rows.length && !preview.errors.length) void run(() => onImport(preview.rows)); }}
+                disabled={busy || !preview?.rows.length || !!previewErrors.length}
+                onClick={() => { if (preview?.rows.length && !previewErrors.length) void run(() => onImport(preview.rows)); }}
               >
                 <CloudUpload size={16} /> Importar facturas
               </button>
@@ -286,7 +276,23 @@ export function Modal({
                     <div className="form-grid">
                       <FormField label="Proveedor" name="supplier" required placeholder="Nombre del proveedor" />
                       <FormField label="Restaurante" name="restaurant" required select options={restaurants} />
-                      <FormField label="N.º de factura" name="number" required placeholder="Número emitido por el proveedor" />
+                      <div className="form-field">
+                        <label htmlFor="invoice-document-kind">Tipo de documento</label>
+                        <select id="invoice-document-kind" name="documentKind" value={documentKind}
+                          onChange={(event) => setDocumentKind(event.target.value)}>
+                          <option>Factura</option>
+                          {SERVICE_TYPES.map((type) => <option key={type}>{type}</option>)}
+                        </select>
+                      </div>
+                      {documentKind === "Factura" ? (
+                        <FormField label="N.º de factura" name="number" required placeholder="Número emitido por el proveedor" />
+                      ) : (
+                        <div className="form-field">
+                          <label htmlFor="invoice-service-reference">Referencia del servicio (opcional)</label>
+                          <input id="invoice-service-reference" name="serviceReference" placeholder="Contrato o cuota" />
+                          <small>El identificador incluye el tipo, la fecha de emisión y el restaurante.</small>
+                        </div>
+                      )}
                       <div className="form-field">
                         <label htmlFor="invoice-amount">Monto total (C$) <span className="required-star">*</span></label>
                         <input id="invoice-amount" name="amount" type="number" min="0.01" step="0.01" placeholder="0.00" required />

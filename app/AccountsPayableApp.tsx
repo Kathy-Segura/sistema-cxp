@@ -23,7 +23,7 @@ import { useInvoiceFilters } from "../hooks/useInvoiceFilters";
 import { PageContent } from "../layout/PageContent";
 import { createInvoiceExport, dueDate, type InvoiceFileRow } from "../lib/invoice-file-format";
 import { invoiceBalance, invoiceCategory, managuaDate } from "../lib/invoice-balances";
-import { invoiceNumberKey } from "../lib/invoice-identity";
+import { invoiceNumberKey, resolveInvoiceNumber, SERVICE_TYPES } from "../lib/invoice-identity";
 
 export function AccountsPayableApp() {
   const [section, setSection] = useState<Section>("Resumen");
@@ -110,11 +110,14 @@ export function AccountsPayableApp() {
     (invoiceCounts.get(invoiceNumberKey(invoice.supplier, invoice.code)) ?? 0) > 1).map((invoice) => invoice.id));
   const addInvoice = async (data: FormData) => {
     const issue = String(data.get("issue"));
+    const restaurant = String(data.get("restaurant") ?? "");
+    const service = SERVICE_TYPES.find((type) => type === data.get("documentKind"));
+    const reference = service ? `${service}: ${data.get("serviceReference") ?? ""}` : String(data.get("number") ?? "");
     const creditDays = Number(data.get("credit") || 0);
     const fields: InvoiceFileRow = {
       supplier: String(data.get("supplier")),
-      number: String(data.get("number")),
-      restaurant: String(data.get("restaurant")),
+      number: resolveInvoiceNumber(reference, issue, restaurant),
+      restaurant,
       issue,
       due: String(data.get("due") || dueDate(issue, creditDays)),
       amount: Number(data.get("amount")),

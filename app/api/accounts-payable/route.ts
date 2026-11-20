@@ -3,6 +3,7 @@ import { AccountsPayableRepository, InvoiceOperationError } from "@/lib/accounts
 import { PAYMENT_METHODS, type PaymentMethod } from "@/types";
 import { moneyCents } from "@/lib/invoice-balances";
 import { isoDate } from "@/utils/formatters";
+import { resolveInvoiceNumber } from "@/lib/invoice-identity";
 
 let pendingWrite = Promise.resolve();
 function write<T>(operation: () => Promise<T>) {
@@ -43,11 +44,15 @@ export async function POST(request: Request) {
       return NextResponse.json(await write(() => new AccountsPayableRepository().recordPayment(input)));
     }
     if (body.action !== "createInvoices" || !Array.isArray(body.invoices) || !body.invoices.length) return NextResponse.json({ error: "Solicitud de facturas inválida." }, { status: 400 });
-    const invoices = body.invoices.map((invoice: Record<string, unknown>) => ({
-      supplier: String(invoice.supplier ?? "").trim(), restaurant: String(invoice.restaurant ?? "").trim(),
-      number: String(invoice.number ?? "").trim(), issue: isoDate(invoice.issue), due: isoDate(invoice.due),
-      amount: Number(invoice.amount),
-    }));
+    const invoices = body.invoices.map((invoice: Record<string, unknown>) => {
+      const restaurant = String(invoice.restaurant ?? "").trim();
+      const issue = isoDate(invoice.issue);
+      return {
+        supplier: String(invoice.supplier ?? "").trim(), restaurant, issue, due: isoDate(invoice.due),
+        number: resolveInvoiceNumber(String(invoice.number ?? ""), issue, restaurant),
+        amount: Number(invoice.amount),
+      };
+    });
     if (invoices.some((invoice: { supplier: string; restaurant: string; number: string; issue: string; due: string; amount: number }) =>
       !invoice.supplier || !invoice.restaurant || !invoice.number || !isoDate(invoice.issue) ||
       !isoDate(invoice.due) || invoice.due < invoice.issue || !(moneyCents(invoice.amount) > 0))) {

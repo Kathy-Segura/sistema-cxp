@@ -2,6 +2,7 @@ import * as XLSX from "xlsx";
 import { invoiceCategory, invoiceCreditDays, moneyCents, moneyValue } from "./invoice-balances";
 import { isoDate, normalizeExcelHeader } from "../utils/formatters";
 import type { Invoice } from "../types";
+import { invoiceNumberKey, resolveInvoiceNumber } from "./invoice-identity";
 
 export const INVOICE_IMPORT_HEADERS = [
   "Proveedor", "Restaurante", "No. Factura", "Fecha Emisión", "Días de crédito", "Fecha de Vencimiento", "Categoría", "Monto",
@@ -14,6 +15,26 @@ export const INVOICE_EXPORT_HEADERS = [
 export type InvoiceFileRow = {
   supplier: string; restaurant: string; number: string; issue: string; due: string; amount: number;
 };
+
+type InvoiceDuplicate = { row: InvoiceFileRow; sourceRow: number; reason: string };
+
+export function findInvoiceDuplicates(rows: InvoiceFileRow[], rowNumbers: number[], invoices: Invoice[]) {
+  const registered = new Set(invoices.map((invoice) => invoiceNumberKey(invoice.supplier, invoice.code)));
+  const seen = new Map<string, number>();
+  const duplicates: InvoiceDuplicate[] = [];
+  rows.forEach((row, index) => {
+    const key = invoiceNumberKey(row.supplier, row.number);
+    const sourceRow = rowNumbers[index];
+    const firstRow = seen.get(key);
+    if (registered.has(key)) {
+      duplicates.push({ row, sourceRow, reason: `${row.supplier} ya tiene la factura N.º ${row.number} registrada.` });
+    } else if (firstRow !== undefined) {
+      duplicates.push({ row, sourceRow, reason: `La factura N.º ${row.number} de ${row.supplier} se repite en la fila ${firstRow}.` });
+    }
+    seen.set(key, firstRow ?? sourceRow);
+  });
+  return duplicates;
+}
 
 export function dueDate(issue: string, creditDays: number) {
   if (!issue || !Number.isSafeInteger(creditDays) || creditDays < 0) return "";
@@ -86,13 +107,14 @@ export function parseInvoiceWorkbook(bytes: ArrayBuffer, restaurants: readonly s
         };
         const supplier = string("supplier");
         const numberCell = field("number");
-        const number = typeof numberCell?.v === "number" && /^0\d+$/.test(numberCell.w ?? "")
+        const inputNumber = typeof numberCell?.v === "number" && /^0\d+$/.test(numberCell.w ?? "")
           ? numberCell.w! : string("number");
         const restaurantText = string("restaurant");
         const restaurant = restaurants.length
           ? restaurants.find((name) => headerKey(name) === headerKey(restaurantText))
           : restaurantText;
         const issue = date("issue");
+        const number = resolveInvoiceNumber(inputNumber, issue, restaurant ?? "");
         const credit = string("credit") ? Number(value("credit")) : 0;
         const due = string("due") ? date("due") : dueDate(issue, credit);
         const amount = moneyValue(value("amount"));
@@ -101,7 +123,8 @@ export function parseInvoiceWorkbook(bytes: ArrayBuffer, restaurants: readonly s
           .map((key) => INVOICE_IMPORT_HEADERS[importColumnOrder[key]]);
         if (excelErrors.length) problems.push(`error de Excel en ${excelErrors.join(", ")}`);
         if (!supplier) problems.push("falta Proveedor");
-        if (!number) problems.push("falta No. Factura");
+        if (!inputNumber) problems.push("falta No. Factura o tipo de servicio (Renta, Préstamo u Otro)");
+        else if (!number && issue && restaurant) problems.push("referencia del servicio no válida");
         if (!restaurant) problems.push("Restaurante no válido");
         if (!issue) problems.push("Fecha Emisión no válida");
         if (!due || (issue && due < issue)) problems.push("Fecha de Vencimiento o Días de crédito no válidos");
@@ -118,15 +141,21 @@ export function parseInvoiceWorkbook(bytes: ArrayBuffer, restaurants: readonly s
   throw new Error("No se encontraron los encabezados de carga. Usa la plantilla de Cuentas por pagar.");
 }
 
+function excelDate(value: string) {
+  const date = isoDate(value);
+  return date ? (Date.parse(date) - Date.UTC(1899, 11, 30)) / 86_400_000 : null;
+}
+
+function invoiceFileValues(row: InvoiceFileRow) {
+  return [
+    row.supplier, row.restaurant, row.number, excelDate(row.issue), invoiceCreditDays(row.issue, row.due),
+    excelDate(row.due), invoiceCategory(row.issue, row.due), row.amount,
+  ];
+}
+
 export function createInvoiceExport(invoices: Invoice[]) {
-  const excelDate = (value: string) => {
-    const date = isoDate(value);
-    return date ? (Date.parse(date) - Date.UTC(1899, 11, 30)) / 86_400_000 : null;
-  };
   const data = invoices.map((invoice) => [
-    invoice.supplier, invoice.restaurant, invoice.code, excelDate(invoice.issue),
-    invoiceCreditDays(invoice.issue, invoice.due), excelDate(invoice.due),
-    invoiceCategory(invoice.issue, invoice.due), invoice.amount, invoice.paidAmount ?? 0,
+    ...invoiceFileValues({ ...invoice, number: invoice.code }), invoice.paidAmount ?? 0,
     invoice.pendingBalance ?? invoice.amount, invoice.status,
   ]);
   const sheet = XLSX.utils.aoa_to_sheet([[...INVOICE_EXPORT_HEADERS], ...data]);
@@ -139,4 +168,22 @@ export function createInvoiceExport(invoices: Invoice[]) {
   const book = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(book, sheet, "Facturas");
   return book;
+}
+
+export function downloadInvoiceDuplicates(duplicates: InvoiceDuplicate[]) {
+  const sheet = XLSX.utils.aoa_to_sheet([
+    [...INVOICE_IMPORT_HEADERS, "Fila de origen", "Motivo"],
+    ...duplicates.map(({ row, sourceRow, reason }) => [...invoiceFileValues(row), sourceRow, reason]),
+  ]);
+  sheet["!cols"] = [27, 24, 30, 17, 17, 24, 13, 17, 15, 68].map((wch) => ({ wch }));
+  sheet["!autofilter"] = { ref: `A1:J${duplicates.length + 1}` };
+  for (let row = 2; row <= duplicates.length + 1; row++) {
+    sheet[`C${row}`].z = "@";
+    sheet[`D${row}`].z = "yyyy-mm-dd";
+    sheet[`F${row}`].z = "yyyy-mm-dd";
+    sheet[`H${row}`].z = "#,##0.00";
+  }
+  const book = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(book, sheet, "Duplicadas");
+  XLSX.writeFile(book, "facturas-duplicadas.xlsx");
 }
