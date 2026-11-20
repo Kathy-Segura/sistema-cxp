@@ -1,8 +1,13 @@
 "use client";
 import { useState } from "react";
-import { Check, X } from "lucide-react";
+import { Check, Pencil, ReceiptText, X } from "lucide-react";
 import type { Row } from "../../types";
 import { invoiceCategory } from "../../lib/invoice-balances";
+import { isoDate } from "../../utils/formatters";
+import { StatusBadge } from "../tables/StatusBadge";
+
+const isInvoiceDateField = (key: string) => key === "issue" || key === "due";
+
 export function RecordActionModal({
   row,
   mode,
@@ -16,14 +21,19 @@ export function RecordActionModal({
   onSave: (row: Row) => void;
   invoice?: boolean;
 }) {
+  const isInvoiceEdit = invoice && mode === "edit";
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(
-      Object.entries(row).map(([key, value]) => [key, String(value ?? "")]),
+      Object.entries(row).map(([key, value]) => [
+        key,
+        isInvoiceEdit && isInvoiceDateField(key) ? isoDate(value) : String(value ?? ""),
+      ]),
     ),
   );
   const title = invoice
     ? mode === "view" ? "Detalle de la factura" : "Editar factura"
     : mode === "view" ? "Detalle del registro" : "Editar registro";
+  const HeaderIcon = mode === "edit" ? Pencil : ReceiptText;
   const labels: Record<string, string> = {
     id: "ID de factura",
     code: "Número de factura",
@@ -51,23 +61,35 @@ export function RecordActionModal({
   const groups = [
     { title: "Datos de la factura", fields: ["id", "supplier", "code", "restaurant", "status"] },
     { title: "Fechas y plazo", fields: ["issue", "due", "dateCreated", "paidDate", "category"] },
-    { title: "Importes", fields: ["amount", "paidAmount", "pendingBalance"] },
+    { title: "Importes", className: "invoice-amount-grid", fields: ["amount", "paidAmount", "pendingBalance"] },
   ];
   const renderField = (key: string) => {
     const label = labels[key] || key.replace(/([A-Z])/g, " $1").replace(/^./, (letter) => letter.toUpperCase());
+    const editDate = isInvoiceEdit && isInvoiceDateField(key);
     const category = key === "category" && invoice ? invoiceCategory(values.issue, values.due) : undefined;
     const readOnly = mode === "view" || ["paidAmount", "pendingBalance", "paidDate", "status"].includes(key) ||
       (invoice && ["id", "dateCreated", "category"].includes(key));
     return (
       <div className="form-field" key={key}>
-        <label htmlFor={`record-${key}`}>{label}</label>
+        <label htmlFor={`record-${key}`}>{label}{editDate && <span className="required-star"> *</span>}</label>
         {key === "category" && invoice ? (
           <output id={`record-${key}`} className="invoice-field-output">
             {category === 1 ? "1 · Hasta 30 días" : category === 2 ? "2 · Desde 31 días" : "Sin plazo válido"}
           </output>
+        ) : key === "status" && invoice ? (
+          <output id="record-status" className="invoice-field-output">
+            {values.status ? <StatusBadge status={values.status} /> : "—"}
+          </output>
         ) : (
-          <input id={`record-${key}`} value={values[key] ?? ""} readOnly={readOnly}
-            onChange={(event) => setValues((current) => ({ ...current, [key]: event.target.value }))} />
+          <input
+            id={`record-${key}`}
+            type={editDate ? "date" : "text"}
+            value={values[key] ?? ""}
+            readOnly={readOnly}
+            required={editDate}
+            min={editDate && key === "due" ? values.issue || undefined : undefined}
+            onChange={(event) => setValues((current) => ({ ...current, [key]: event.target.value }))}
+          />
         )}
       </div>
     );
@@ -80,16 +102,18 @@ export function RecordActionModal({
       }}
     >
       <section
-        className={`modal-card ${invoice ? "invoice-workflow-card" : ""}`}
+        className={`modal-card ${invoice ? "invoice-workflow-card invoice-wide-card" : ""}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="record-modal-title"
+        aria-describedby="record-modal-description"
       >
         <header className="modal-header">
+          {invoice && <span className="invoice-modal-icon" aria-hidden="true"><HeaderIcon size={22} /></span>}
           <div>
-            <span className="modal-kicker">CONTROL DE PAGOS</span>
+            {!invoice && <span className="modal-kicker">CONTROL DE PAGOS</span>}
             <h2 id="record-modal-title">{title}</h2>
-            <p>
+            <p id="record-modal-description">
               {mode === "view"
                 ? "Información completa del registro seleccionado."
                 : "Actualiza los campos y guarda los cambios."}
@@ -121,10 +145,10 @@ export function RecordActionModal({
         >
           {invoice ? (
             <div className="invoice-form-grid form-grid">
-              {groups.map(({ title, fields }) => (
+              {groups.map(({ title, className, fields }) => (
                 <fieldset className="invoice-form-group form-full" key={title}>
                   <legend>{title}</legend>
-                  <div className="form-grid">{fields.map(renderField)}</div>
+                  <div className={`form-grid ${className ?? ""}`}>{fields.map(renderField)}</div>
                 </fieldset>
               ))}
             </div>

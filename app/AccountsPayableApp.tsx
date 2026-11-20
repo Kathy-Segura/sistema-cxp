@@ -22,6 +22,7 @@ import { useToast } from "../hooks/useToast";
 import { useInvoiceFilters } from "../hooks/useInvoiceFilters";
 import { PageContent } from "../layout/PageContent";
 import { createInvoiceExport, dueDate, type InvoiceFileRow } from "../lib/invoice-file-format";
+import { downloadInvoiceWorkbook } from "../lib/invoice-export-style";
 import { invoiceBalance, invoiceCategory, managuaDate } from "../lib/invoice-balances";
 import { invoiceNumberKey, resolveInvoiceNumber, SERVICE_TYPES } from "../lib/invoice-identity";
 
@@ -330,8 +331,12 @@ export function AccountsPayableApp() {
     showToast("Cambios guardados correctamente");
   };
   const exportInvoices = () => {
-    XLSX.writeFile(createInvoiceExport(invoicesFiltered), "cuentas-por-pagar.xlsx");
-    showToast("Reporte Excel descargado");
+    try {
+      downloadInvoiceWorkbook(createInvoiceExport(invoicesFiltered), "cuentas-por-pagar.xlsx");
+      showToast("Reporte Excel descargado");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "No se pudo exportar el reporte.");
+    }
   };
   const exportPayments = () => {
     const book = XLSX.utils.book_new();

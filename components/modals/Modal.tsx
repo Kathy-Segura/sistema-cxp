@@ -7,7 +7,10 @@ import {
   Check,
   CloudUpload,
   FileSpreadsheet,
+  FileUp,
+  ReceiptText,
   UploadCloud,
+  Wallet,
   X,
 } from "lucide-react";
 import { FormField } from "../forms/FormField";
@@ -15,7 +18,10 @@ import type { Invoice } from "../../types";
 import { PAYMENT_METHODS } from "../../types";
 import { money } from "../../utils/formatters";
 import { invoiceCategory, invoiceCreditDays, managuaDate, moneyCents } from "../../lib/invoice-balances";
-import { downloadInvoiceDuplicates, dueDate, findInvoiceDuplicates, INVOICE_IMPORT_HEADERS, parseInvoiceWorkbook, type InvoiceFileRow } from "../../lib/invoice-file-format";
+import {
+  discardInvoiceDuplicates, dueDate, findInvoiceDuplicates,
+  INVOICE_IMPORT_HEADERS, parseInvoiceWorkbook, type InvoiceFileRow, type InvoiceImportPreview,
+} from "../../lib/invoice-file-format";
 import { SERVICE_TYPES } from "../../lib/invoice-identity";
 
 const PREVIEW_PAGE_SIZE = 8;
@@ -45,7 +51,8 @@ export function Modal({
   restaurants: string[];
 }) {
   const [file, setFile] = useState<File | undefined>();
-  const [preview, setPreview] = useState<ReturnType<typeof parseInvoiceWorkbook>>();
+  const [preview, setPreview] = useState<InvoiceImportPreview>();
+  const [discardedCount, setDiscardedCount] = useState(0);
   const [previewPage, setPreviewPage] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -68,6 +75,8 @@ export function Modal({
   const remainingAfterPayment = amountCents > 0 && amountCents <= balanceCents
     ? (balanceCents - amountCents) / 100 : undefined;
   const inputRef = useRef<HTMLInputElement>(null);
+  const headerIcon = { invoice: ReceiptText, payment: Wallet, import: FileUp };
+  const HeaderIcon = kind === "supplier" || kind === "loan" ? undefined : headerIcon[kind];
   const meta = {
     invoice: ["Nueva factura", "Registra una cuenta por pagar de proveedor."],
     supplier: [
@@ -109,6 +118,7 @@ export function Modal({
     if (busy) return;
     setFile(selected);
     setPreview(undefined);
+    setDiscardedCount(0);
     setPreviewPage(0);
     await run(async () => {
       if (selected.size > 10 * 1024 * 1024) throw new Error("El archivo supera el límite de 10 MB.");
@@ -118,6 +128,13 @@ export function Modal({
       }
       setPreview(parsed);
     });
+  };
+  const discardDuplicates = () => {
+    if (!preview || !duplicates.length || busy) return;
+    setDiscardedCount((count) => count + duplicates.length);
+    setPreview(discardInvoiceDuplicates(preview, duplicates));
+    setPreviewPage(0);
+    setOperationError("");
   };
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -143,16 +160,18 @@ export function Modal({
       }}
     >
       <section
-        className={`modal-card ${["invoice", "payment", "import"].includes(kind) ? "invoice-workflow-card" : ""} ${kind === "import" && preview ? "import-preview-card" : ""}`}
+        className={`modal-card ${HeaderIcon ? "invoice-workflow-card" : ""} ${kind === "payment" ? "invoice-wide-card" : ""} ${kind === "import" && preview ? "import-preview-card" : ""}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="modal-heading"
+        aria-describedby="modal-description"
       >
         <header className="modal-header">
+          {HeaderIcon && <span className="invoice-modal-icon" aria-hidden="true"><HeaderIcon size={22} /></span>}
           <div>
-            <span className="modal-kicker">GRUPO BUEN SABOR</span>
+            {!HeaderIcon && <span className="modal-kicker">GRUPO BUEN SABOR</span>}
             <h2 id="modal-heading">{meta[0]}</h2>
-            <p>{meta[1]}</p>
+            <p id="modal-description">{meta[1]}</p>
           </div>
           <button
             className="icon-button modal-close"
@@ -215,8 +234,23 @@ export function Modal({
             {operationError && <p role="alert" className="invoice-form-error">{operationError}</p>}
             {preview && (
               <section className="invoice-import-preview" aria-labelledby="invoice-preview-heading">
-                <h3 id="invoice-preview-heading">Vista previa</h3>
-                <p>{preview.sheetName} · {preview.rows.length} filas legibles{previewErrors.length ? ` · ${previewErrors.length} incidencias` : ""}</p>
+                <div className="invoice-preview-heading">
+                  <div>
+                    <h3 id="invoice-preview-heading">Vista previa</h3>
+                    <p>{preview.sheetName} · {preview.rows.length} filas legibles{previewErrors.length ? ` · ${previewErrors.length} incidencias` : ""}</p>
+                  </div>
+                  {duplicates.length > 0 && (
+                    <button type="button" className="button-secondary" disabled={busy} onClick={discardDuplicates}>
+                      Descartar duplicadas ({duplicates.length})
+                    </button>
+                  )}
+                </div>
+                {discardedCount > 0 && (
+                  <p className="invoice-preview-feedback" role="status">
+                    {discardedCount} filas duplicadas descartadas.{" "}
+                    {preview.rows.length ? `Quedan ${preview.rows.length} filas en la vista previa.` : "No quedan filas nuevas."}
+                  </p>
+                )}
                 {previewRows.length > 0 && <>
                   <div className="table-scroll">
                     <table className="data-table" aria-label="Facturas del archivo">
@@ -248,12 +282,6 @@ export function Modal({
               </div>
             )}
             <footer className="modal-footer import-actions">
-              {duplicates.length > 0 && (
-                <button type="button" className="button-secondary import-download-duplicates" disabled={busy}
-                  onClick={() => void run(async () => downloadInvoiceDuplicates(duplicates))}>
-                  <ArrowDownToLine size={16} /> Descargar duplicadas ({duplicates.length})
-                </button>
-              )}
               <button className="button-secondary" disabled={busy} onClick={onClose}>
                 Cancelar
               </button>
@@ -402,7 +430,7 @@ export function Modal({
                       <dl>
                         <div><dt>Monto total</dt><dd>{money(selectedInvoice.amount)}</dd></div>
                         <div><dt>Pagado</dt><dd>{money(selectedInvoice.paidAmount ?? 0)}</dd></div>
-                        <div><dt>Saldo pendiente</dt><dd>{money(pendingBalance ?? 0)}</dd></div>
+                        <div className="payment-balance"><dt>Saldo pendiente</dt><dd>{money(pendingBalance ?? 0)}</dd></div>
                       </dl>
                     </div>
                   )}

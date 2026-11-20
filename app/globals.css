@@ -28,40 +28,201 @@
 
 .invoice-payment-action{color:var(--primary);background:var(--accent);flex-shrink:0}
 .invoice-payment-action:hover{background:#d9e9fd;color:#215295}
-.invoice-workflow-card .modal-header h2{font-size:21px}
-.invoice-workflow-card .modal-header p{font-size:12px;line-height:1.45}
-.invoice-form-grid{gap:18px}
-.invoice-form-group{min-width:0;margin:0;padding:14px 16px 16px;border:1px solid var(--border);border-radius:9px}
-.invoice-form-group legend{padding:0 6px;margin-left:-2px;font-weight:700;color:var(--foreground);font-size:13px}
-.invoice-workflow-card .form-field label,.invoice-field-output{font-size:12px}
-.invoice-workflow-card .form-field input,.invoice-workflow-card .form-field select,.invoice-workflow-card .form-field textarea{min-height:40px;font-size:13px}
-.invoice-workflow-card .form-field textarea{height:auto;padding-block:9px}
-.invoice-workflow-card .form-field small{font-size:11px;line-height:1.4;color:var(--muted-foreground)}
-.invoice-field-output{min-height:40px;display:flex;align-items:center;padding:0 10px;background:var(--muted);color:var(--foreground);border-radius:6px}
-.payment-summary{display:grid;gap:12px;padding:14px 16px;border:1px solid var(--border);border-radius:9px;background:var(--muted)}
-.payment-summary-heading{display:grid;gap:3px;color:var(--foreground)}
-.payment-summary-heading span{font-size:11px;color:var(--muted-foreground)}
-.payment-summary dl{display:flex;flex-wrap:wrap;gap:10px 24px;margin:0}
-.payment-summary dt{font-size:11px;color:var(--muted-foreground)}
-.payment-summary dd{margin:3px 0 0;font-size:14px;font-weight:700;color:var(--foreground);font-variant-numeric:tabular-nums}
-.payment-fill{border:0;background:none;padding:3px 0;align-self:flex-start;color:var(--accent-foreground);font-weight:600;font-size:11px;text-align:left}
-.payment-fill:hover{text-decoration:underline}
-.invoice-form-error{padding:10px 12px;border-radius:6px;background:#fef1ef;color:#9d3a31;font-size:12px;line-height:1.4}
-@media(max-width:600px){.invoice-workflow-card .modal-body{padding:15px 17px}.invoice-form-group{padding:10px 12px}.payment-summary dl{gap:8px 16px}}
+.invoice-wide-card{width:min(920px,100%)}
+.invoice-workflow-card {
+  --invoice-field-border: #d8e4f0;
+  --invoice-field-surface: #f8fafd;
+  --invoice-focus-ring: #5c8cc6;
+  --invoice-secondary-text: #4d6077;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--background);
+  color-scheme: light;
+}
+.invoice-workflow-card .modal-header {
+  justify-content: flex-start;
+  gap: 14px;
+  padding: 22px 26px;
+  border-color: var(--border);
+  background: var(--accent);
+}
+.invoice-modal-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 44px;
+  height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: white;
+  color: var(--accent-foreground);
+}
+.invoice-workflow-card .modal-header h2 {
+  margin: 0 0 4px;
+  color: var(--foreground);
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.invoice-workflow-card .modal-header p {
+  color: var(--invoice-secondary-text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.invoice-workflow-card .modal-close {
+  flex: 0 0 36px;
+  height: 36px;
+  margin: 0 0 0 auto;
+  color: var(--accent-foreground);
+}
+.invoice-workflow-card .modal-close:hover { background: white; }
+.invoice-form-grid { gap: 18px; }
+.invoice-form-group {
+  min-width: 0;
+  margin: 0;
+  padding: 14px 18px 18px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: white;
+}
+.invoice-form-group legend {
+  padding: 0 8px;
+  color: var(--accent-foreground);
+  font-size: 14px;
+  font-weight: 700;
+}
+.invoice-workflow-card .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.invoice-workflow-card .invoice-amount-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.invoice-amount-grid input { font-variant-numeric: tabular-nums; }
+.invoice-workflow-card .form-field label {
+  color: var(--foreground);
+  font-size: 13px;
+}
+.invoice-workflow-card .form-field :is(input, select, textarea),
+.invoice-field-output {
+  min-height: 44px;
+  padding-inline: 12px;
+  border: 1px solid var(--invoice-field-border);
+  border-radius: 10px;
+  background: var(--invoice-field-surface);
+  color: var(--foreground);
+  font-size: 14px;
+}
+.invoice-workflow-card .form-field :is(input:not([readonly]), select, textarea):hover:not(:disabled) {
+  border-color: #b9cee5;
+}
+.invoice-workflow-card .form-field :is(input:not([readonly]), select, textarea):focus {
+  border-color: #94b4dc;
+  background: white;
+}
+.invoice-workflow-card .form-field :is(input, textarea)::placeholder { color: var(--muted-foreground); }
+.invoice-workflow-card .form-field textarea { height: auto; padding-block: 9px; }
+.invoice-workflow-card .form-select-wrap select { padding-right: 34px; }
+.invoice-workflow-card .form-select-wrap svg { top: 50%; right: 12px; transform: translateY(-50%); }
+.invoice-workflow-card .form-field input[readonly],
+.invoice-field-output { border-color: #e8edf4; background: #f1f5fa; }
+.invoice-field-output { display: flex; align-items: center; }
+.invoice-field-output .status-badge { padding: 4px 8px; font-size: 12px; }
+.invoice-field-output .status-green { color: #285c49; }
+.invoice-field-output .status-amber { color: #775311; }
+.invoice-field-output .status-red { color: #9d3a31; }
+.invoice-workflow-card .form-field small { color: var(--invoice-secondary-text); font-size: 12px; line-height: 1.4; }
+.invoice-workflow-card :is(button, input, select, textarea):focus-visible {
+  outline: 2px solid var(--invoice-focus-ring);
+  outline-offset: 2px;
+}
+.invoice-workflow-card .modal-footer { margin-top: 22px; border-color: var(--border); }
+.invoice-workflow-card :is(.button-primary, .button-secondary) {
+  height: auto;
+  min-height: 40px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.invoice-workflow-card .button-primary { border-color: #245da4; background: #245da4; }
+.invoice-workflow-card .button-primary:hover:not(:disabled) { border-color: #1e4f8c; background: #1e4f8c; }
+.invoice-workflow-card .button-secondary { border-color: var(--invoice-field-border); background: white; color: var(--accent-foreground); }
+.invoice-workflow-card .button-secondary:hover:not(:disabled) { background: var(--accent); }
+.invoice-workflow-card button:disabled { cursor: not-allowed; opacity: .55; }
+.payment-summary {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: white;
+}
+.payment-summary-heading { display: grid; gap: 4px; color: var(--foreground); }
+.payment-summary-heading span { color: var(--invoice-secondary-text); font-size: 13px; overflow-wrap: anywhere; }
+.payment-summary dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.payment-summary dl > div { padding: 9px 12px; border-radius: 8px; background: var(--muted); }
+.payment-summary dl > .payment-balance { background: var(--accent); }
+.payment-summary dt { color: var(--invoice-secondary-text); font-size: 12px; }
+.payment-summary dd {
+  margin: 4px 0 0;
+  color: var(--foreground);
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.payment-balance dd { color: var(--accent-foreground); }
+.payment-fill {
+  align-self: flex-start;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--accent-foreground);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+}
+.payment-fill:hover { text-decoration: underline; }
+.invoice-form-error {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid #f2cbc5;
+  border-radius: 8px;
+  background: #fef1ef;
+  color: #9d3a31;
+  font-size: 13px;
+  line-height: 1.45;
+}
+@media (max-width: 600px) {
+  .invoice-workflow-card .modal-header { gap: 10px; padding: 16px; }
+  .invoice-workflow-card .modal-header h2 { font-size: 20px; }
+  .invoice-modal-icon { flex-basis: 38px; height: 38px; }
+  .invoice-workflow-card .modal-body { padding: 16px; }
+  .invoice-workflow-card .form-grid { grid-template-columns: minmax(0, 1fr); }
+  .invoice-form-group, .payment-summary { padding: 12px; }
+  .invoice-workflow-card .form-field :is(input, select, textarea) { font-size: 16px; }
+}
+@media (max-width: 440px) {
+  .payment-summary dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .payment-summary .payment-balance { grid-column: 1 / -1; }
+}
 .import-preview-card{width:min(1000px,100%)}
-.invoice-import-preview{margin-top:18px;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.invoice-import-preview{margin-top:18px;border:1px solid var(--border);border-radius:12px;overflow:hidden;background:white}
 .invoice-import-preview h3{margin:13px 14px 4px;font-size:14px;color:var(--foreground)}
 .invoice-import-preview p{margin:0 14px 13px;font-size:11px;color:var(--muted-foreground)}
 .invoice-import-preview .data-table th,.invoice-import-preview .data-table td{height:34px}
 .import-preview-pagination{display:flex;justify-content:flex-end;align-items:center;gap:10px;padding:8px 12px}
 .invoice-duplicate{display:table;margin-top:4px;padding:2px 5px;border-radius:4px;background:#faf3e7;color:#775311;font-size:9px;font-weight:700}
-.invoice-drop-zone{width:100%;min-height:62px;flex-direction:row;justify-content:flex-start;gap:10px;padding:10px 12px;text-align:left}
+.invoice-workflow-card .template-download { padding: 10px 12px; border-color: var(--border); border-radius: 10px; background: white; color: var(--accent-foreground); }
+.invoice-workflow-card .template-download:hover:not(:disabled) { background: var(--accent); }
+.invoice-workflow-card .template-icon, .invoice-drop-zone .upload-icon { background: var(--accent); color: var(--accent-foreground); }
+.invoice-workflow-card .template-download strong, .invoice-drop-zone strong { color: var(--foreground); font-size: 13px; }
+.invoice-workflow-card .template-download small, .invoice-drop-zone :is(span, small),
+.invoice-workflow-card .import-notes span { color: var(--invoice-secondary-text); font-size: 12px; }
+.invoice-drop-zone{width:100%;min-height:62px;flex-direction:row;justify-content:flex-start;gap:10px;padding:10px 12px;border-color:var(--invoice-field-border);border-radius:10px;background:var(--invoice-field-surface);text-align:left}
+.invoice-drop-zone:hover:not(:disabled),.invoice-drop-zone.drop-active { border-color: #94b4dc; background: var(--accent); }
 .invoice-drop-zone .upload-icon{width:32px;height:32px;flex:none;margin:0}
 .invoice-drop-copy{display:grid;gap:3px;flex:1;min-width:0}
 .invoice-drop-copy strong{overflow-wrap:anywhere}
 .invoice-drop-zone small{margin:0;text-align:right}
 .import-actions{flex-wrap:wrap}
-.import-download-duplicates{margin-right:auto}
+.invoice-preview-heading{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0 12px;padding-right:14px}
+.invoice-preview-heading>.button-secondary{margin:6px 0 8px 14px}
+.invoice-import-preview .invoice-preview-feedback{margin-top:0;padding:8px 10px;border-radius:5px;background:#edf6f1;color:#285c49}
 @media(max-width:480px){
   .invoice-drop-zone{display:grid;grid-template-columns:32px minmax(0,1fr);gap:3px 10px}
   .invoice-drop-zone small{grid-column:2;text-align:left}

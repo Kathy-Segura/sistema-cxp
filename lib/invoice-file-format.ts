@@ -16,7 +16,19 @@ export type InvoiceFileRow = {
   supplier: string; restaurant: string; number: string; issue: string; due: string; amount: number;
 };
 
-type InvoiceDuplicate = { row: InvoiceFileRow; sourceRow: number; reason: string };
+type InvoiceDuplicate = { sourceRow: number; reason: string };
+export type InvoiceImportPreview = {
+  rows: InvoiceFileRow[]; rowNumbers: number[]; errors: string[]; sheetName: string;
+};
+
+export function discardInvoiceDuplicates(preview: InvoiceImportPreview, duplicates: InvoiceDuplicate[]): InvoiceImportPreview {
+  const discarded = new Set(duplicates.map(({ sourceRow }) => sourceRow));
+  return {
+    ...preview,
+    rows: preview.rows.filter((_, index) => !discarded.has(preview.rowNumbers[index])),
+    rowNumbers: preview.rowNumbers.filter((row) => !discarded.has(row)),
+  };
+}
 
 export function findInvoiceDuplicates(rows: InvoiceFileRow[], rowNumbers: number[], invoices: Invoice[]) {
   const registered = new Set(invoices.map((invoice) => invoiceNumberKey(invoice.supplier, invoice.code)));
@@ -27,9 +39,9 @@ export function findInvoiceDuplicates(rows: InvoiceFileRow[], rowNumbers: number
     const sourceRow = rowNumbers[index];
     const firstRow = seen.get(key);
     if (registered.has(key)) {
-      duplicates.push({ row, sourceRow, reason: `${row.supplier} ya tiene la factura N.º ${row.number} registrada.` });
+      duplicates.push({ sourceRow, reason: `${row.supplier} ya tiene la factura N.º ${row.number} registrada.` });
     } else if (firstRow !== undefined) {
-      duplicates.push({ row, sourceRow, reason: `La factura N.º ${row.number} de ${row.supplier} se repite en la fila ${firstRow}.` });
+      duplicates.push({ sourceRow, reason: `La factura N.º ${row.number} de ${row.supplier} se repite en la fila ${firstRow}.` });
     }
     seen.set(key, firstRow ?? sourceRow);
   });
@@ -61,7 +73,7 @@ const importColumnOrder: Record<ImportColumn, number> = {
 const headerKey = (value: unknown) => normalizeExcelHeader(String(value ?? ""))
   .replace(/[._º°]/g, " ").replace(/\s+/g, " ").trim();
 
-export function parseInvoiceWorkbook(bytes: ArrayBuffer, restaurants: readonly string[] = []) {
+export function parseInvoiceWorkbook(bytes: ArrayBuffer, restaurants: readonly string[] = []): InvoiceImportPreview {
   const workbook = XLSX.read(bytes, { type: "array", raw: true, cellDates: false, codepage: 65001 });
   const required: ImportColumn[] = ["supplier", "restaurant", "number", "issue", "amount"];
   for (const name of workbook.SheetNames) {
@@ -168,22 +180,4 @@ export function createInvoiceExport(invoices: Invoice[]) {
   const book = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(book, sheet, "Facturas");
   return book;
-}
-
-export function downloadInvoiceDuplicates(duplicates: InvoiceDuplicate[]) {
-  const sheet = XLSX.utils.aoa_to_sheet([
-    [...INVOICE_IMPORT_HEADERS, "Fila de origen", "Motivo"],
-    ...duplicates.map(({ row, sourceRow, reason }) => [...invoiceFileValues(row), sourceRow, reason]),
-  ]);
-  sheet["!cols"] = [27, 24, 30, 17, 17, 24, 13, 17, 15, 68].map((wch) => ({ wch }));
-  sheet["!autofilter"] = { ref: `A1:J${duplicates.length + 1}` };
-  for (let row = 2; row <= duplicates.length + 1; row++) {
-    sheet[`C${row}`].z = "@";
-    sheet[`D${row}`].z = "yyyy-mm-dd";
-    sheet[`F${row}`].z = "yyyy-mm-dd";
-    sheet[`H${row}`].z = "#,##0.00";
-  }
-  const book = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(book, sheet, "Duplicadas");
-  XLSX.writeFile(book, "facturas-duplicadas.xlsx");
 }
