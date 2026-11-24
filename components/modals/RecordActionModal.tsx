@@ -1,7 +1,8 @@
 "use client";
 import { useState } from "react";
 import { Check, Pencil, ReceiptText, X } from "lucide-react";
-import type { Row } from "../../types";
+import type { ProveedorRecord, Row } from "../../types";
+import { SupplierOptions } from "../forms/SupplierOptions";
 import { invoiceCategory } from "../../lib/invoice-balances";
 import { isoDate } from "../../utils/formatters";
 import { StatusBadge } from "../tables/StatusBadge";
@@ -14,14 +15,19 @@ export function RecordActionModal({
   onClose,
   onSave,
   invoice,
+  providers = [],
 }: {
   row: Row;
   mode: "view" | "edit";
   onClose: () => void;
-  onSave: (row: Row) => void;
+  onSave: (row: Row, confirmedReassignment: boolean) => void | Promise<void>;
   invoice?: boolean;
+  providers?: ProveedorRecord[];
 }) {
   const isInvoiceEdit = invoice && mode === "edit";
+  const [confirmed, setConfirmed] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(
       Object.entries(row).map(([key, value]) => [
@@ -30,6 +36,9 @@ export function RecordActionModal({
       ]),
     ),
   );
+  const originalSupplierId = String(row.supplierId ?? "");
+  const supplierId = values.supplierId ?? "";
+  const needsConfirmation = isInvoiceEdit && !!originalSupplierId && supplierId !== originalSupplierId;
   const title = invoice
     ? mode === "view" ? "Detalle de la factura" : "Editar factura"
     : mode === "view" ? "Detalle del registro" : "Editar registro";
@@ -72,7 +81,27 @@ export function RecordActionModal({
     return (
       <div className="form-field" key={key}>
         <label htmlFor={`record-${key}`}>{label}{editDate && <span className="required-star"> *</span>}</label>
-        {key === "category" && invoice ? (
+        {key === "supplier" && isInvoiceEdit ? (
+          <>
+            <select id="record-supplier" value={supplierId} disabled={saving} onChange={(event) => {
+              setValues((current) => ({ ...current, supplierId: event.target.value }));
+              setConfirmed(false);
+              setSaveError("");
+            }}>
+              <option value="" disabled={!!originalSupplierId}>Sin proveedor</option>
+              {!!originalSupplierId && !providers.some((provider) => provider.proveedor_id === originalSupplierId) && (
+                <option value={originalSupplierId}>{String(row.supplier || originalSupplierId)}</option>
+              )}
+              <SupplierOptions providers={providers} />
+            </select>
+            {needsConfirmation && <div className="supplier-invoice-options">
+              <label>
+                <input type="checkbox" required checked={confirmed} disabled={saving} onChange={(event) => setConfirmed(event.target.checked)} />
+                <span>Confirmo el cambio de proveedor de la factura y de sus pagos vinculados.</span>
+              </label>
+            </div>}
+          </>
+        ) : key === "category" && invoice ? (
           <output id={`record-${key}`} className="invoice-field-output">
             {category === 1 ? "1 · Hasta 30 días" : category === 2 ? "2 · Desde 31 días" : "Sin plazo válido"}
           </output>
@@ -86,6 +115,7 @@ export function RecordActionModal({
             type={editDate ? "date" : "text"}
             value={values[key] ?? ""}
             readOnly={readOnly}
+            disabled={saving}
             required={editDate}
             min={editDate && key === "due" ? values.issue || undefined : undefined}
             onChange={(event) => setValues((current) => ({ ...current, [key]: event.target.value }))}
@@ -98,7 +128,7 @@ export function RecordActionModal({
     <div
       className="modal-backdrop"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (!saving && event.target === event.currentTarget) onClose();
       }}
     >
       <section
@@ -122,6 +152,7 @@ export function RecordActionModal({
           <button
             className="icon-button modal-close"
             aria-label="Cerrar"
+            disabled={saving}
             onClick={onClose}
           >
             <X size={19} />
@@ -129,18 +160,25 @@ export function RecordActionModal({
         </header>
         <form
           className="modal-body"
-          onSubmit={(event) => {
+          onSubmit={async (event) => {
             event.preventDefault();
-            onSave(
-              Object.fromEntries(
+            if (mode !== "edit" || saving || (needsConfirmation && !confirmed)) return;
+            setSaving(true);
+            setSaveError("");
+            try {
+              await onSave(Object.fromEntries(
                 Object.entries(values).map(([key, value]) => [
                   key,
                   typeof row[key] === "number" && /^-?\d+(\.\d+)?$/.test(value)
                     ? Number(value)
                     : String(value),
                 ]),
-              ) as Row,
-            );
+              ) as Row, confirmed);
+            } catch (error) {
+              setSaveError(error instanceof Error ? error.message : "No se pudieron guardar los cambios.");
+            } finally {
+              setSaving(false);
+            }
           }}
         >
           {invoice ? (
@@ -153,16 +191,18 @@ export function RecordActionModal({
               ))}
             </div>
           ) : <div className="form-grid">{Object.keys(values).map(renderField)}</div>}
+          {saveError && <p className="invoice-form-error" role="alert">{saveError}</p>}
           <footer className="modal-footer">
             <button
               type="button"
               className="button-secondary"
+              disabled={saving}
               onClick={onClose}
             >
               Cerrar
             </button>
             {mode === "edit" && (
-              <button type="submit" className="button-primary">
+              <button type="submit" className="button-primary" disabled={saving || (needsConfirmation && !confirmed)}>
                 <Check size={16} /> Guardar cambios
               </button>
             )}

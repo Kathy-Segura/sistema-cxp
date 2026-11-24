@@ -1,8 +1,8 @@
 import * as XLSX from "xlsx";
 import { invoiceCategory, invoiceCreditDays, moneyCents, moneyValue } from "./invoice-balances";
 import { isoDate, normalizeExcelHeader } from "../utils/formatters";
-import type { Invoice } from "../types";
-import { invoiceNumberKey, resolveInvoiceNumber } from "./invoice-identity";
+import type { Invoice, ProveedorRecord } from "../types";
+import { invoiceNumberKey, normalizeInvoiceIdentity, resolveInvoiceNumber } from "./invoice-identity";
 
 export const INVOICE_IMPORT_HEADERS = [
   "Proveedor", "Restaurante", "No. Factura", "Fecha Emisión", "Días de crédito", "Fecha de Vencimiento", "Categoría", "Monto",
@@ -13,16 +13,15 @@ export const INVOICE_EXPORT_HEADERS = [
 ] as const;
 
 export type InvoiceFileRow = {
-  supplier: string; restaurant: string; number: string; issue: string; due: string; amount: number;
+  supplier: string; supplierId?: string; restaurant: string; number: string; issue: string; due: string; amount: number;
 };
 
-type InvoiceDuplicate = { sourceRow: number; reason: string };
 export type InvoiceImportPreview = {
   rows: InvoiceFileRow[]; rowNumbers: number[]; errors: string[]; sheetName: string;
 };
 
-export function discardInvoiceDuplicates(preview: InvoiceImportPreview, duplicates: InvoiceDuplicate[]): InvoiceImportPreview {
-  const discarded = new Set(duplicates.map(({ sourceRow }) => sourceRow));
+export function discardInvoiceDuplicates(preview: InvoiceImportPreview, duplicateRows: number[]): InvoiceImportPreview {
+  const discarded = new Set(duplicateRows);
   return {
     ...preview,
     rows: preview.rows.filter((_, index) => !discarded.has(preview.rowNumbers[index])),
@@ -30,22 +29,16 @@ export function discardInvoiceDuplicates(preview: InvoiceImportPreview, duplicat
   };
 }
 
-export function findInvoiceDuplicates(rows: InvoiceFileRow[], rowNumbers: number[], invoices: Invoice[]) {
-  const registered = new Set(invoices.map((invoice) => invoiceNumberKey(invoice.supplier, invoice.code)));
-  const seen = new Map<string, number>();
-  const duplicates: InvoiceDuplicate[] = [];
+export function findInvoiceDuplicateRows(rows: InvoiceFileRow[], rowNumbers: number[], invoices: Invoice[], providers: ProveedorRecord[] = []) {
+  const providerIds = new Map(providers.map((provider) => [normalizeInvoiceIdentity(provider.nombre_legal ?? ""), provider.proveedor_id]));
+  const seen = new Set(invoices.map((invoice) => invoiceNumberKey(invoice.supplierId || invoice.supplier, invoice.code)));
+  const duplicateRows: number[] = [];
   rows.forEach((row, index) => {
-    const key = invoiceNumberKey(row.supplier, row.number);
-    const sourceRow = rowNumbers[index];
-    const firstRow = seen.get(key);
-    if (registered.has(key)) {
-      duplicates.push({ sourceRow, reason: `${row.supplier} ya tiene la factura N.º ${row.number} registrada.` });
-    } else if (firstRow !== undefined) {
-      duplicates.push({ sourceRow, reason: `La factura N.º ${row.number} de ${row.supplier} se repite en la fila ${firstRow}.` });
-    }
-    seen.set(key, firstRow ?? sourceRow);
+    const key = invoiceNumberKey(row.supplierId || providerIds.get(normalizeInvoiceIdentity(row.supplier)) || row.supplier, row.number);
+    if (seen.has(key)) duplicateRows.push(rowNumbers[index]);
+    seen.add(key);
   });
-  return duplicates;
+  return duplicateRows;
 }
 
 export function dueDate(issue: string, creditDays: number) {

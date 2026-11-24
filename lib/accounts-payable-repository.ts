@@ -1,6 +1,6 @@
 import "server-only";
 import { getSheetsClient, getSpreadsheetId } from "./google-sheets";
-import type { FacturaRecord, PagoRecord, PrestamoRecord, PrestamoSaldoRecord, ProveedorRecord } from "@/types";
+import type { FacturaRecord, PagoRecord, PrestamoRecord, PrestamoSaldoRecord, ProveedorRecord, SupplierInput } from "@/types";
 import { invoiceBalance, invoiceCategory, managuaDate, moneyCents, moneyValue } from "./invoice-balances";
 import { isoDate } from "../utils/formatters";
 import { invoiceNumberKey, normalizeInvoiceIdentity } from "./invoice-identity";
@@ -17,7 +17,7 @@ function scalar(header: string, value: unknown): Primitive {
     return source === "" ? 0 : moneyValue(value);
   }
   if (numericColumns.has(header)) return source === "" ? 0 : Number(source.replace(/[^\d.-]/g, "")) || 0;
-  if (booleanColumns.has(header)) return source.toLowerCase() === "true";
+  if (booleanColumns.has(header)) return ["true", "1", "sí", "si", "activo", "verdadero"].includes(source.toLowerCase());
   return source;
 }
 
@@ -44,6 +44,59 @@ function appendCells(sheetId: number, headers: string[], records: SheetRecord[])
     sheetId, fields: "userEnteredValue",
     rows: records.map((record) => ({ values: headers.map((header) => cell(record[header] ?? "")) })),
   } };
+}
+
+function updateRowCells(sheetId: number, headers: string[], rowIndex: number, changes: SheetRecord) {
+  return Object.entries(changes).map(([field, value]) => ({
+    updateCells: {
+      start: { sheetId, rowIndex, columnIndex: columnIndex(headers, field) },
+      rows: [{ values: [cell(value)] }], fields: "userEnteredValue",
+    },
+  }));
+}
+
+function auditEntry(actor: string, now: string, accion: string, entidad: string, entidad_id: string, campo: string, valor_anterior: string, valor_nuevo: string) {
+  return { bitacora_id: `BIT-${crypto.randomUUID()}`, fecha_hora: now, usuario_id: actor, accion, entidad, entidad_id,
+    campo, valor_anterior, valor_nuevo, origen: "MANUAL", ip_o_sesion: "" };
+}
+
+function invoiceSupplierChanges({ invoiceValues, paymentValues, assignments, supplierId, sheetId, actor, now }: {
+  invoiceValues: unknown[][]; paymentValues: unknown[][]; assignments: { invoiceId: string; expectedSupplierId: string }[];
+  supplierId: string; sheetId: (tab: string) => number; actor: string; now: string;
+}) {
+  const [invoiceHeader = [], ...invoiceRows] = invoiceValues;
+  const [paymentHeader = [], ...paymentRows] = paymentValues;
+  const invoiceHeaders = invoiceHeader.map(String);
+  const paymentHeaders = paymentHeader.map(String);
+  const invoices = parseRecords<FacturaRecord>(invoiceHeaders, invoiceRows);
+  const payments = parseRecords<PagoRecord>(paymentHeaders, paymentRows);
+  const numbers = new Set(invoices.filter((invoice) => invoice.proveedor_id === supplierId)
+    .map((invoice) => normalizeInvoiceIdentity(invoice.numero_factura || invoice.codigo_factura || "")));
+  const requests: ReturnType<typeof updateRowCells> = [];
+  const audit: ReturnType<typeof auditEntry>[] = [];
+  for (const { invoiceId, expectedSupplierId } of assignments) {
+    const matches = invoices.filter((invoice) => invoice.factura_id === invoiceId);
+    if (!matches.length) throw new InvoiceOperationError(`No se encontró la factura ${invoiceId}.`, 404);
+    if (matches.length > 1) throw new InvoiceOperationError(`El ID ${invoiceId} está duplicado en Google Sheets.`, 409);
+    const [invoice] = matches;
+    const previous = invoice.proveedor_id || "";
+    if (previous === supplierId) continue;
+    if (previous !== expectedSupplierId) throw new InvoiceOperationError(`El proveedor de la factura ${invoiceId} cambió. Actualiza la página y verifica la asociación.`, 409);
+    const number = normalizeInvoiceIdentity(invoice.numero_factura || invoice.codigo_factura || "");
+    if (number && numbers.has(number)) throw new InvoiceOperationError(`El proveedor de destino ya tiene registrado el número de la factura ${invoiceId}.`, 409);
+    if (number) numbers.add(number);
+    requests.push(...updateRowCells(sheetId("facturas"), invoiceHeaders, invoices.indexOf(invoice) + 3,
+      { proveedor_id: supplierId, actualizado_por: actor, actualizado_en: now }));
+    payments.forEach((payment, index) => {
+      if (payment.factura_id !== invoiceId || payment.proveedor_id === supplierId) return;
+      if (payment.proveedor_id && payment.proveedor_id !== previous) {
+        throw new InvoiceOperationError(`Un pago de la factura ${invoiceId} está asociado a un proveedor distinto. Revisa ese pago antes de cambiar la asociación.`, 409);
+      }
+      requests.push(...updateRowCells(sheetId("pagos"), paymentHeaders, index + 3, { proveedor_id: supplierId }));
+    });
+    audit.push(auditEntry(actor, now, "Asociar factura", "facturas", invoiceId, "proveedor_id", previous, supplierId));
+  }
+  return { requests, audit };
 }
 
 export class InvoiceOperationError extends Error {
@@ -79,6 +132,77 @@ export class AccountsPayableRepository {
   private nextSequentialId(prefix: string, values: string[]) {
     const numbers = values.map((value) => Number(value.match(new RegExp(`^${prefix}-(\\d+)$`))?.[1] ?? 0));
     return `${prefix}-${String(Math.max(0, ...numbers) + 1).padStart(prefix === "FAC" ? 5 : 3, "0")}`;
+  }
+
+  async saveSupplier(input: SupplierInput, id: string, invoiceIds: string[], actor = "SISTEMA") {
+    const ranges = ["proveedores!A3:ZZ", "bitacora!A3:ZZ3"];
+    if (invoiceIds.length) ranges.push("facturas!A3:ZZ", "pagos!A3:ZZ");
+    const [{ data }, sheetId] = await Promise.all([
+      this.sheets.spreadsheets.values.batchGet({ spreadsheetId: this.spreadsheetId, ranges }),
+      this.sheetIds(),
+    ]);
+    const [providerRange, auditRange, invoiceRange, paymentRange] = data.valueRanges ?? [];
+    const [providerHeaders = [], ...providerRows] = providerRange?.values ?? [];
+    const [auditHeaders = []] = auditRange?.values ?? [];
+    const providers = parseRecords<ProveedorRecord>(providerHeaders, providerRows);
+    const matches = id ? providers.filter((provider) => provider.proveedor_id === id) : [];
+    if (id && !matches.length) throw new InvoiceOperationError("No se encontró el proveedor.", 404);
+    if (matches.length > 1) throw new InvoiceOperationError("El ID del proveedor está duplicado en Google Sheets.", 409);
+    const [current] = matches;
+    const taxKey = (ruc: string) => (ruc ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const others = providers.filter((provider) => provider.proveedor_id && provider.proveedor_id !== id);
+    const code = input.codigo_proveedor || current?.codigo_proveedor || this.nextSequentialId("PRV", others.map((provider) => provider.codigo_proveedor));
+    const comparable = [
+      ["codigo_proveedor", code, normalizeInvoiceIdentity],
+      ["nombre_legal", input.nombre_legal, normalizeInvoiceIdentity],
+      ["ruc", input.ruc, taxKey],
+    ] as const;
+    if (comparable.some(([field, value, normalize]) => {
+      const key = normalize(value);
+      return key && key !== normalize(current?.[field] ?? "") && others.some((provider) => normalize(provider[field] ?? "") === key);
+    })) {
+      throw new InvoiceOperationError("Ya existe un proveedor con ese código, nombre legal o RUC. Abre su ficha para actualizarlo.", 409);
+    }
+    if (current?.ruc && !input.ruc) throw new InvoiceOperationError("El RUC registrado es obligatorio.", 409);
+    const proveedor_id = id || this.nextSequentialId("PROV", others.map((provider) => provider.proveedor_id));
+    const now = new Date().toISOString();
+    const fields = { ...input, codigo_proveedor: code, actualizado_en: now };
+    const provider: ProveedorRecord = { proveedor_id, activo: current?.activo ?? true,
+      creado_por: current?.creado_por ?? actor, creado_en: current?.creado_en ?? now, ...fields };
+    const links = invoiceSupplierChanges({ invoiceValues: invoiceRange?.values ?? [], paymentValues: paymentRange?.values ?? [],
+      assignments: invoiceIds.map((invoiceId) => ({ invoiceId, expectedSupplierId: "" })), supplierId: proveedor_id, sheetId, actor, now });
+    const audit = [auditEntry(actor, now, current ? "Editar proveedor" : "Crear proveedor", "proveedores", proveedor_id,
+      "nombre_legal", current?.nombre_legal ?? "", provider.nombre_legal), ...links.audit];
+    await this.sheets.spreadsheets.batchUpdate({ spreadsheetId: this.spreadsheetId, requestBody: { requests: [
+      ...(current ? updateRowCells(sheetId("proveedores"), providerHeaders, providers.indexOf(current) + 3, fields)
+        : [appendCells(sheetId("proveedores"), providerHeaders, [{ ...provider }])]),
+      ...links.requests, appendCells(sheetId("bitacora"), auditHeaders, audit),
+    ] } }, { retry: false });
+    return { provider, invoiceIds, audit };
+  }
+
+  async assignInvoiceSupplier(invoiceId: string, supplierId: string, expectedSupplierId: string, actor = "SISTEMA") {
+    const [{ data }, sheetId] = await Promise.all([
+      this.sheets.spreadsheets.values.batchGet({ spreadsheetId: this.spreadsheetId,
+        ranges: ["proveedores!A3:ZZ", "facturas!A3:ZZ", "pagos!A3:ZZ", "bitacora!A3:ZZ3"],
+        valueRenderOption: "UNFORMATTED_VALUE", dateTimeRenderOption: "FORMATTED_STRING" }),
+      this.sheetIds(),
+    ]);
+    const [providerRange, invoiceRange, paymentRange, auditRange] = data.valueRanges ?? [];
+    const [providerHeaders = [], ...providerRows] = providerRange?.values ?? [];
+    const [auditHeaders = []] = auditRange?.values ?? [];
+    const matches = parseRecords<ProveedorRecord>(providerHeaders, providerRows).filter((provider) => provider.proveedor_id === supplierId);
+    if (!matches.length) throw new InvoiceOperationError("No se encontró el proveedor seleccionado.", 404);
+    if (matches.length > 1) throw new InvoiceOperationError("El ID del proveedor está duplicado en Google Sheets.", 409);
+    const [provider] = matches;
+    const { requests, audit } = invoiceSupplierChanges({ invoiceValues: invoiceRange?.values ?? [], paymentValues: paymentRange?.values ?? [],
+      assignments: [{ invoiceId, expectedSupplierId }], supplierId, sheetId, actor, now: new Date().toISOString() });
+    if (requests.length) {
+      await this.sheets.spreadsheets.batchUpdate({ spreadsheetId: this.spreadsheetId, requestBody: {
+        requests: [...requests, appendCells(sheetId("bitacora"), auditHeaders, audit)],
+      } }, { retry: false });
+    }
+    return { invoiceId, supplierId, supplier: provider.nombre_legal || supplierId, audit };
   }
 
   async deleteInvoice(facturaId: string, actor = "SISTEMA") {
@@ -197,7 +321,7 @@ export class AccountsPayableRepository {
     return { facturaId, ...balance };
   }
 
-  async createInvoices(input: Array<{ supplier: string; restaurant: string; number: string; issue: string; due: string; amount: number }>, origin = "MANUAL", actor = "SISTEMA") {
+  async createInvoices(input: Array<{ supplier: string; supplierId?: string; restaurant: string; number: string; issue: string; due: string; amount: number }>, origin = "MANUAL", actor = "SISTEMA") {
     const [{ data }, sheetId] = await Promise.all([
       this.sheets.spreadsheets.values.batchGet({
         spreadsheetId: this.spreadsheetId,
@@ -216,13 +340,13 @@ export class AccountsPayableRepository {
     const restaurants = parseRecords<SheetRecord>(restaurantHeaders, restaurantRows);
     const existingInvoices = parseRecords<FacturaRecord>(invoiceHeaders, invoiceRows).filter((invoice) => invoice.factura_id);
     const providerByName = new Map(providers.map((provider) => [normalizeInvoiceIdentity(provider.nombre_legal), provider]));
-    const providerNames = new Map(providers.map((provider) => [provider.proveedor_id, provider.nombre_legal]));
+    const providerById = new Map(providers.map((provider) => [provider.proveedor_id, provider]));
     const restaurantByName = new Map(restaurants.map((restaurant) => [String(restaurant.nombre).trim().toLowerCase(), String(restaurant.restaurante_id)]));
     const now = new Date().toISOString();
     const date = managuaDate();
-    const newProviders: SheetRecord[] = [];
+    const newProviders: ProveedorRecord[] = [];
     const registered = new Set(existingInvoices.map((invoice) =>
-      invoiceNumberKey(providerNames.get(invoice.proveedor_id) || invoice.proveedor_id, invoice.numero_factura)));
+      invoiceNumberKey(invoice.proveedor_id, invoice.numero_factura || invoice.codigo_factura || "")));
     let providerSequence = providers.map((provider) => provider.proveedor_id);
     const invoiceSequence = [
       ...existingInvoices.map((invoice) => invoice.factura_id),
@@ -232,15 +356,16 @@ export class AccountsPayableRepository {
     ];
     const invoices: SheetRecord[] = input.map((item) => {
       const providerKey = normalizeInvoiceIdentity(item.supplier);
-      const key = invoiceNumberKey(providerKey, item.number);
-      if (registered.has(key)) throw new InvoiceOperationError(`El proveedor ${item.supplier} ya tiene registrada la factura N.º ${item.number}.`, 409);
-      registered.add(key);
-      let provider = providerByName.get(providerKey);
+      let provider = item.supplierId ? providerById.get(item.supplierId) : providerByName.get(providerKey);
+      if (item.supplierId && !provider) throw new InvoiceOperationError("No se encontró el proveedor asignado a la factura.", 404);
       if (!provider) {
         const proveedor_id = this.nextSequentialId("PROV", providerSequence); providerSequence = [...providerSequence, proveedor_id];
         provider = { proveedor_id, codigo_proveedor: this.nextSequentialId("PRV", providers.map((current) => current.codigo_proveedor).concat(newProviders.map((current) => String(current.codigo_proveedor)))), nombre_legal: item.supplier.trim(), nombre_comercial: "", ruc: "", telefono: "", email: "", banco: "", cuenta_bancaria: "", moneda_preferida: "NIO", activo: true, creado_por: actor, creado_en: now, actualizado_en: now };
-        providerByName.set(providerKey, provider); newProviders.push(provider as unknown as SheetRecord);
+        providerByName.set(providerKey, provider); newProviders.push(provider);
       }
+      const key = invoiceNumberKey(provider.proveedor_id, item.number);
+      if (registered.has(key)) throw new InvoiceOperationError(`El proveedor ${provider.nombre_legal} ya tiene registrada la factura N.º ${item.number}.`, 409);
+      registered.add(key);
       const restaurante_id = restaurantByName.get(item.restaurant.trim().toLowerCase());
       if (!restaurante_id) throw new Error(`Restaurante no válido: ${item.restaurant}`);
       const factura_id = this.nextSequentialId("FAC", invoiceSequence);
@@ -250,12 +375,12 @@ export class AccountsPayableRepository {
     const audit = invoices.map((invoice) => ({ bitacora_id: `BIT-${crypto.randomUUID()}`, fecha_hora: now, usuario_id: actor, accion: "Crear factura", entidad: "facturas", entidad_id: invoice.factura_id, campo: "", valor_anterior: "", valor_nuevo: invoice.codigo_factura, origen: invoice.origen_carga, ip_o_sesion: "" }));
     await this.sheets.spreadsheets.batchUpdate({
       spreadsheetId: this.spreadsheetId, requestBody: { requests: [
-        ...(newProviders.length ? [appendCells(sheetId("proveedores"), providerHeaders, newProviders)] : []),
+        ...(newProviders.length ? [appendCells(sheetId("proveedores"), providerHeaders, newProviders.map((provider) => ({ ...provider })))] : []),
         appendCells(sheetId("facturas"), invoiceHeaders, invoices),
         appendCells(sheetId("bitacora"), auditHeaders, audit),
       ] },
     }, { retry: false });
-    return invoices.map((invoice) => invoice.factura_id);
+    return { ids: invoices.map((invoice) => invoice.factura_id), providerIds: invoices.map((invoice) => invoice.proveedor_id), newProviders };
   }
 
   async dashboard() {

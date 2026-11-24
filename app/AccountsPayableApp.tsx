@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import type { FacturaRecord, Invoice, InvoiceStatus, PagoRecord, PrestamoRecord, PrestamoSaldoRecord, ProveedorRecord, Section, Row, RowAction } from "../types";
 import {
-  initialInvoices, suppliers, payments, loans, teamUsers, activity,
+  initialInvoices, payments, loans, teamUsers, activity,
 } from "../data/initial-data";
 import { nav } from "../constants/navigation";
 import {
@@ -15,8 +15,10 @@ import {
 } from "../constants/sections";
 import { Modal } from "../components/modals/Modal";
 import { RecordActionModal } from "../components/modals/RecordActionModal";
+import { InvoiceSupplierModal } from "../components/modals/InvoiceSupplierModal";
 import { DeleteConfirmationCard } from "../components/modals/DeleteConfirmationCard";
 import { SectionContent } from "../components/sections/SectionContent";
+import { SupplierSection } from "../components/sections/SupplierSection";
 import { Overview } from "../components/overview/Overview";
 import { useToast } from "../hooks/useToast";
 import { useInvoiceFilters } from "../hooks/useInvoiceFilters";
@@ -29,7 +31,11 @@ import { invoiceNumberKey, resolveInvoiceNumber, SERVICE_TYPES } from "../lib/in
 export function AccountsPayableApp() {
   const [section, setSection] = useState<Section>("Resumen");
   const [invoices, setInvoices] = useState(initialInvoices);
-  const [supplierRecords, setSupplierRecords] = useState(suppliers);
+  const [supplierRecords, setSupplierRecords] = useState<ProveedorRecord[]>([]);
+  const [supplierContext, setSupplierContext] = useState<ProveedorRecord>();
+  const [invoiceSupplier, setInvoiceSupplier] = useState<ProveedorRecord>();
+  const [dashboardLoading, setDashboardLoading] = useState(true);
+  const [dashboardError, setDashboardError] = useState("");
   const [paymentRecords, setPaymentRecords] = useState(payments);
   const [loanRecords, setLoanRecords] = useState(loans);
   const [logs, setLogs] = useState(activity);
@@ -54,6 +60,7 @@ export function AccountsPayableApp() {
   const [page, setPage] = useState(1);
   const { toast, showToast } = useToast();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const closeModal = () => { setModal(null); setSupplierContext(undefined); };
   useEffect(() => {
     let active = true;
     fetch("/api/accounts-payable", { cache: "no-store" })
@@ -66,24 +73,27 @@ export function AccountsPayableApp() {
         const restaurantName = new Map(data.restaurantes.map((row) => [String(row.restaurante_id), String(row.nombre)]));
         setRestaurantOptions([...new Set(data.restaurantes.map((row) => String(row.nombre ?? "").trim()).filter(Boolean))]);
         const providersById = new Map(data.proveedores.map((item) => [item.proveedor_id, item]));
-        const invoiceCount = new Map<string, number>();
-        const providerBalance = new Map<string, number>();
-        data.facturas.forEach((item) => { invoiceCount.set(item.proveedor_id, (invoiceCount.get(item.proveedor_id) ?? 0) + 1); if (item.estado !== "Pagada") providerBalance.set(item.proveedor_id, (providerBalance.get(item.proveedor_id) ?? 0) + item.saldo_pendiente); });
         const latestPaymentDates = new Map<string, string>();
         for (const payment of data.pagos) {
           if (payment.fecha_pago > (latestPaymentDates.get(payment.factura_id) ?? "")) {
             latestPaymentDates.set(payment.factura_id, payment.fecha_pago);
           }
         }
-        setInvoices(data.facturas.map((item) => ({ id: item.factura_id, supplier: providersById.get(item.proveedor_id)?.nombre_legal || item.proveedor_id, code: item.numero_factura || item.codigo_factura, restaurant: restaurantName.get(item.restaurante_id) || item.restaurante_id, issue: item.fecha_emision, due: item.fecha_vencimiento, amount: item.monto_total, paidAmount: item.monto_pagado, pendingBalance: item.saldo_pendiente, status: item.estado, category: item.categoria, dateCreated: item.fecha_ingreso, paidDate: latestPaymentDates.get(item.factura_id) })));
-        setSupplierRecords(data.proveedores.map((item) => ({ code: item.codigo_proveedor, name: item.nombre_legal, id: item.ruc, invoices: invoiceCount.get(item.proveedor_id) ?? 0, balance: providerBalance.get(item.proveedor_id) ?? 0, bank: [item.banco, item.cuenta_bancaria].filter(Boolean).join(" · ") || "Sin cuenta registrada", state: item.activo ? "Activo" : "Inactivo" })));
-        setPaymentRecords(data.pagos.map((item) => ({ ref: item.codigo_pago || item.referencia, supplier: providersById.get(item.proveedor_id)?.nombre_legal || item.proveedor_id, restaurant: restaurantName.get(item.restaurante_id) || item.restaurante_id, date: item.fecha_pago, method: item.metodo_pago, amount: item.monto, status: "Completada" })));
+        setInvoices(data.facturas.map((item) => ({ id: item.factura_id, supplierId: item.proveedor_id, supplier: providersById.get(item.proveedor_id)?.nombre_legal || item.proveedor_id, code: item.numero_factura || item.codigo_factura, restaurant: restaurantName.get(item.restaurante_id) || item.restaurante_id, issue: item.fecha_emision, due: item.fecha_vencimiento, amount: item.monto_total, paidAmount: item.monto_pagado, pendingBalance: item.saldo_pendiente, status: item.estado, category: item.categoria, dateCreated: item.fecha_ingreso, paidDate: latestPaymentDates.get(item.factura_id) })));
+        setSupplierRecords(data.proveedores.filter((provider) => provider.proveedor_id));
+        setPaymentRecords(data.pagos.map((item) => ({ ref: item.codigo_pago || item.referencia, invoiceId: item.factura_id, supplierId: item.proveedor_id, supplier: providersById.get(item.proveedor_id)?.nombre_legal || item.proveedor_id, restaurant: restaurantName.get(item.restaurante_id) || item.restaurante_id, date: item.fecha_pago, method: item.metodo_pago, amount: item.monto, status: "Completada" })));
         const latestBalance = new Map<string, number>(); data.prestamo_saldos.forEach((item) => latestBalance.set(item.prestamo_id, item.saldo_final));
         setLoanRecords(data.prestamos.map((item) => ({ bank: item.acreedor, number: item.numero_prestamo, holder: item.titular, opened: item.fecha_apertura, rate: `${item.tasa_anual * 100}%`, installment: item.cuota_programada, balance: latestBalance.get(item.prestamo_id) ?? item.monto_inicial, date: `${item.dia_pago} de cada mes` })));
         setUsers(data.usuarios.map((item) => ({ initials: String(item.nombre || "US").split(" ").map((word) => word[0]).join("").slice(0, 2), name: item.nombre, email: item.email, role: item.rol, access: "Según rol", restaurants: "Todos", state: ["true", "1"].includes(String(item.activo).toLowerCase()) ? "Activo" : "Inactivo" })));
         setLogs(data.bitacora.map((item) => ({ who: item.usuario_id, initials: String(item.usuario_id).slice(0, 2), action: item.accion, detail: `${item.entidad} · ${item.entidad_id}`, date: item.fecha_hora })));
       })
-      .catch((error) => active && showToast(error instanceof Error ? error.message : "No se pudo conectar con Google Sheets"));
+      .catch((error) => {
+        if (!active) return;
+        const message = error instanceof Error ? error.message : "No se pudo conectar con Google Sheets";
+        setDashboardError(message);
+        showToast(message);
+      })
+      .finally(() => { if (active) setDashboardLoading(false); });
     return () => { active = false; };
   }, []);
   const [pageSize, setPageSize] = useState(10);
@@ -91,32 +101,38 @@ export function AccountsPayableApp() {
   const persistInvoices = async (records: InvoiceFileRow[], origin: "MANUAL" | "IMPORTACION" = "MANUAL") => {
     const response = await fetch("/api/accounts-payable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "createInvoices", invoices: records, origin }) });
     if (!response.ok) throw new Error((await response.json()).error || "No se pudieron guardar las facturas.");
-    const { ids }: { ids: string[] } = await response.json();
+    const { ids, providerIds, newProviders }: { ids: string[]; providerIds: string[]; newProviders: ProveedorRecord[] } = await response.json();
     const today = managuaDate();
+    const names = new Map([...supplierRecords, ...newProviders].map((provider) => [provider.proveedor_id, provider.nombre_legal]));
     const added = records.map(({ number, ...fields }, index): Invoice => ({
-      ...fields, id: ids[index], code: number, paidAmount: 0, pendingBalance: fields.amount,
+      ...fields, id: ids[index], supplierId: providerIds[index], supplier: names.get(providerIds[index]) || fields.supplier,
+      code: number, paidAmount: 0, pendingBalance: fields.amount,
       category: invoiceCategory(fields.issue, fields.due),
       status: invoiceBalance(fields.amount, 0, fields.due, today).estado, dateCreated: today,
     }));
     setInvoices((current) => [...added, ...current]);
+    if (newProviders.length) setSupplierRecords((current) => [...newProviders, ...current]);
     return added;
   };
   const invoicesFiltered = useInvoiceFilters(invoices, search, filter, restaurantFilter, dateType, dateFrom, dateTo);
   const invoiceCounts = new Map<string, number>();
   for (const invoice of invoices) {
-    const key = invoiceNumberKey(invoice.supplier, invoice.code);
+    const key = invoiceNumberKey(invoice.supplierId || invoice.supplier, invoice.code);
     invoiceCounts.set(key, (invoiceCounts.get(key) ?? 0) + 1);
   }
   const duplicateInvoiceIds = new Set(invoices.filter((invoice) =>
-    (invoiceCounts.get(invoiceNumberKey(invoice.supplier, invoice.code)) ?? 0) > 1).map((invoice) => invoice.id));
+    (invoiceCounts.get(invoiceNumberKey(invoice.supplierId || invoice.supplier, invoice.code)) ?? 0) > 1).map((invoice) => invoice.id));
   const addInvoice = async (data: FormData) => {
+    const selected = supplierRecords.find((provider) => provider.proveedor_id === data.get("supplierId"));
+    if (!selected) throw new Error("Selecciona un proveedor registrado.");
     const issue = String(data.get("issue"));
     const restaurant = String(data.get("restaurant") ?? "");
     const service = SERVICE_TYPES.find((type) => type === data.get("documentKind"));
     const reference = service ? `${service}: ${data.get("serviceReference") ?? ""}` : String(data.get("number") ?? "");
     const creditDays = Number(data.get("credit") || 0);
     const fields: InvoiceFileRow = {
-      supplier: String(data.get("supplier")),
+      supplier: selected.nombre_legal || selected.proveedor_id,
+      supplierId: selected.proveedor_id,
       number: resolveInvoiceNumber(reference, issue, restaurant),
       restaurant,
       issue,
@@ -134,40 +150,47 @@ export function AccountsPayableApp() {
       },
       ...current,
     ]);
-    setModal(null);
-    setSection("Facturas");
+    closeModal();
+    if (!supplierContext) setSection("Facturas");
     showToast("Factura creada correctamente");
   };
-  const addSupplier = (data: FormData) => {
-    const name = String(data.get("name"));
-    const code = String(data.get("code"));
-    setSupplierRecords((current) => [
-      {
-        code,
-        name,
-        id: String(data.get("taxId") || "—"),
-        invoices: 0,
-        balance: 0,
-        bank: data.get("bank")
-          ? `${data.get("bank")} · cuenta registrada`
-          : "Sin cuenta registrada",
-        state: "Activo",
-      },
-      ...current,
-    ]);
-    setModal(null);
-    setLogs((current) => [
-      {
-        who: "María Gutiérrez",
-        initials: "MG",
-        action: "Creó un proveedor",
-        detail: `${name} · ${code}`,
-        date: "Ahora",
-      },
-      ...current,
-    ]);
-    setSection("Proveedores");
-    showToast("Proveedor registrado correctamente");
+  const appendAudit = (audit: Row[]) => {
+    if (!audit.length) return;
+    setLogs((current) => [...audit.map((item) => ({ who: item.usuario_id, initials: String(item.usuario_id).slice(0, 2),
+      action: item.accion, detail: `${item.entidad} · ${item.entidad_id}`, date: item.fecha_hora })), ...current]);
+  };
+  const assignInvoiceSupplier = async (invoiceId: string, supplierId: string, expectedSupplierId: string, confirmedReassignment: boolean) => {
+    const response = await fetch("/api/accounts-payable", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "assignInvoiceSupplier", invoiceId, supplierId, expectedSupplierId, confirmedReassignment }),
+    });
+    if (!response.ok) throw new Error((await response.json()).error || "No se pudo asociar la factura.");
+    const result: { invoiceId: string; supplierId: string; supplier: string; audit: Row[] } = await response.json();
+    const updated = { supplierId: result.supplierId, supplier: result.supplier };
+    setInvoices((current) => current.map((item) => item.id === result.invoiceId ? { ...item, ...updated } : item));
+    setPaymentRecords((current) => current.map((item) => item.invoiceId === result.invoiceId ? { ...item, ...updated } : item));
+    appendAudit(result.audit);
+    return updated;
+  };
+  const saveSupplier = async (data: FormData) => {
+    const supplierId = supplierContext?.proveedor_id;
+    const response = await fetch("/api/accounts-payable", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "saveSupplier", supplierId, supplier: Object.fromEntries(data), invoiceIds: data.getAll("invoiceIds") }),
+    });
+    if (!response.ok) throw new Error((await response.json()).error || "No se pudo guardar el proveedor.");
+    const { provider, invoiceIds, audit }: { provider: ProveedorRecord; invoiceIds: string[]; audit: Row[] } = await response.json();
+    const id = provider.proveedor_id;
+    const assigned = new Set(invoiceIds);
+    setSupplierRecords((current) => supplierId
+      ? current.map((item) => item.proveedor_id === id ? provider : item) : [provider, ...current]);
+    setInvoices((current) => current.map((item) => item.supplierId === id || assigned.has(item.id)
+      ? { ...item, supplierId: id, supplier: provider.nombre_legal } : item));
+    setPaymentRecords((current) => current.map((item) => item.supplierId === id || (!item.supplierId && assigned.has(String(item.invoiceId)))
+      ? { ...item, supplierId: id, supplier: provider.nombre_legal } : item));
+    appendAudit(audit);
+    closeModal();
+    showToast(supplierId ? "Proveedor actualizado" : "Proveedor registrado correctamente");
   };
   const addPayment = async (data: FormData) => {
     const invoice = invoices.find((item) => item.id === data.get("invoice"));
@@ -195,7 +218,7 @@ export function AccountsPayableApp() {
       } : item));
       if (!result.alreadyRecorded) {
         setPaymentRecords((current) => [{
-          ref: result.payment.codigo_pago, supplier: invoice.supplier, restaurant: invoice.restaurant,
+          ref: result.payment.codigo_pago, invoiceId: invoice.id, supplierId: invoice.supplierId || "", supplier: invoice.supplier, restaurant: invoice.restaurant,
           date: result.payment.fecha_pago, method: result.payment.metodo_pago,
           amount: result.payment.monto, status: "Completada",
         }, ...current]);
@@ -261,9 +284,7 @@ export function AccountsPayableApp() {
     const label =
       target === "Facturas"
         ? `${row.supplier} · N.º ${row.code} · ${row.id}`
-        : target === "Proveedores"
-          ? `${row.name} · ${row.code}`
-          : target === "Transferencias"
+        : target === "Transferencias"
             ? `${row.ref} · ${row.supplier}`
             : target === "Préstamos"
               ? `${row.bank} · ${row.number}`
@@ -292,13 +313,16 @@ export function AccountsPayableApp() {
       return;
     }
   };
-  const saveRow = (target: Section, original: Row, updated: Row) => {
+  const saveRow = async (target: Section, original: Row, updated: Row, confirmedReassignment: boolean) => {
+    const originalSupplierId = String(original.supplierId ?? "");
+    const newSupplierId = String(updated.supplierId ?? "");
+    const association = target === "Facturas" && newSupplierId && newSupplierId !== originalSupplierId
+      ? await assignInvoiceSupplier(String(original.id), newSupplierId, originalSupplierId, confirmedReassignment)
+      : undefined;
     const matches = (item: Row) =>
       target === "Facturas"
         ? item.id === original.id
-        : target === "Proveedores"
-          ? item.code === original.code
-          : target === "Transferencias"
+        : target === "Transferencias"
             ? item.ref === original.ref
             : target === "Préstamos"
               ? item.number === original.number
@@ -307,13 +331,9 @@ export function AccountsPayableApp() {
       setInvoices((current) =>
         current.map((item) =>
           matches(item as unknown as Row)
-            ? ({ ...item, ...updated, category: invoiceCategory(String(updated.issue), String(updated.due)) } as Invoice)
+            ? ({ ...item, ...updated, ...association, category: invoiceCategory(String(updated.issue), String(updated.due)) } as Invoice)
             : item,
         ),
-      );
-    if (target === "Proveedores")
-      setSupplierRecords((current) =>
-        current.map((item) => (matches(item) ? { ...item, ...updated } : item)),
       );
     if (target === "Transferencias")
       setPaymentRecords((current) =>
@@ -328,7 +348,7 @@ export function AccountsPayableApp() {
         current.map((item) => (matches(item) ? { ...item, ...updated } : item)),
       );
     setRowDialog(null);
-    showToast("Cambios guardados correctamente");
+    showToast(association ? "Proveedor asociado a la factura" : "Cambios guardados correctamente");
   };
   const exportInvoices = () => {
     try {
@@ -463,12 +483,17 @@ export function AccountsPayableApp() {
               onCreate={() => setModal("invoice")}
               onImport={openImport}
             />
+          ) : section === "Proveedores" ? (
+            <SupplierSection providers={supplierRecords} invoices={invoices} loading={dashboardLoading} error={dashboardError}
+              onCreate={() => { setSupplierContext(undefined); setModal("supplier"); }}
+              onEdit={(provider) => { setSupplierContext(provider); setModal("supplier"); }}
+              onAssociate={setInvoiceSupplier}
+              onInvoice={(provider) => { setSupplierContext(provider); setModal("invoice"); }} />
           ) : (
             <SectionContent
               section={section}
               invoices={invoicesFiltered}
               duplicateInvoiceIds={duplicateInvoiceIds}
-              suppliers={supplierRecords}
               payments={paymentRecords}
               loans={loanRecords}
               users={users}
@@ -515,9 +540,11 @@ export function AccountsPayableApp() {
       {modal && (
         <Modal
           kind={modal}
-          onClose={() => setModal(null)}
+          onClose={closeModal}
           onInvoice={addInvoice}
-          onSupplier={addSupplier}
+          onSupplier={saveSupplier}
+          supplier={supplierContext}
+          providers={supplierRecords}
           onPayment={addPayment}
           onLoan={addLoan}
           onImport={importInvoices}
@@ -531,12 +558,21 @@ export function AccountsPayableApp() {
         <RecordActionModal
           row={rowDialog.row}
           invoice={rowDialog.target === "Facturas"}
+          providers={supplierRecords}
           mode={rowDialog.mode}
           onClose={() => setRowDialog(null)}
-          onSave={(updated) =>
-            saveRow(rowDialog.target, rowDialog.row, updated)
+          onSave={(updated, confirmed) =>
+            saveRow(rowDialog.target, rowDialog.row, updated, confirmed)
           }
         />
+      )}
+      {invoiceSupplier && (
+        <InvoiceSupplierModal provider={invoiceSupplier} invoices={invoices} onClose={() => setInvoiceSupplier(undefined)}
+          onAssign={async (invoice, confirmed) => {
+            await assignInvoiceSupplier(invoice.id, invoiceSupplier.proveedor_id, invoice.supplierId || "", confirmed);
+            setInvoiceSupplier(undefined);
+            showToast(`Factura ${invoice.id} asociada al proveedor`);
+          }} />
       )}
       {deleteDialog && (
         <DeleteConfirmationCard id={deleteDialog.id} label={deleteDialog.label}

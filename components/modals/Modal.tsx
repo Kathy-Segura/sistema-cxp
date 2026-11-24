@@ -8,23 +8,36 @@ import {
   CloudUpload,
   FileSpreadsheet,
   FileUp,
+  ListFilter,
   ReceiptText,
   UploadCloud,
+  UsersRound,
   Wallet,
   X,
 } from "lucide-react";
 import { FormField } from "../forms/FormField";
-import type { Invoice } from "../../types";
+import { SupplierOptions } from "../forms/SupplierOptions";
+import type { Invoice, ProveedorRecord, SupplierInput } from "../../types";
 import { PAYMENT_METHODS } from "../../types";
 import { money } from "../../utils/formatters";
 import { invoiceCategory, invoiceCreditDays, managuaDate, moneyCents } from "../../lib/invoice-balances";
 import {
-  discardInvoiceDuplicates, dueDate, findInvoiceDuplicates,
+  discardInvoiceDuplicates, dueDate, findInvoiceDuplicateRows,
   INVOICE_IMPORT_HEADERS, parseInvoiceWorkbook, type InvoiceFileRow, type InvoiceImportPreview,
 } from "../../lib/invoice-file-format";
 import { SERVICE_TYPES } from "../../lib/invoice-identity";
 
 const PREVIEW_PAGE_SIZE = 8;
+const SUPPLIER_FIELDS: { name: Exclude<keyof SupplierInput, "moneda_preferida">; label: string; required?: boolean; type?: string; placeholder?: string }[] = [
+  { name: "nombre_legal", label: "Nombre o razón social", required: true },
+  { name: "nombre_comercial", label: "Nombre comercial" },
+  { name: "ruc", label: "RUC / identificación", required: true },
+  { name: "codigo_proveedor", label: "Código de proveedor", placeholder: "Automático si se deja vacío" },
+  { name: "email", label: "Correo electrónico", type: "email" },
+  { name: "telefono", label: "Teléfono", type: "tel" },
+  { name: "banco", label: "Banco" },
+  { name: "cuenta_bancaria", label: "Cuenta bancaria" },
+];
 export function Modal({
   kind,
   onClose,
@@ -34,6 +47,8 @@ export function Modal({
   onLoan,
   onImport,
   registeredInvoices,
+  supplier,
+  providers,
   paymentInvoices,
   paymentInvoiceId,
   restaurants,
@@ -41,11 +56,13 @@ export function Modal({
   kind: "invoice" | "supplier" | "payment" | "loan" | "import";
   onClose: () => void;
   onInvoice: (data: FormData) => Promise<void>;
-  onSupplier: (data: FormData) => void;
+  onSupplier: (data: FormData) => Promise<void>;
   onPayment: (data: FormData) => Promise<void>;
   onLoan: (data: FormData) => void;
   onImport: (rows: InvoiceFileRow[]) => Promise<void>;
   registeredInvoices: Invoice[];
+  supplier?: ProveedorRecord;
+  providers: ProveedorRecord[];
   paymentInvoices: Invoice[];
   paymentInvoiceId: string;
   restaurants: string[];
@@ -63,9 +80,12 @@ export function Modal({
   const [due, setDue] = useState("");
   const [paymentAmount, setPaymentAmount] = useState("");
   const [selectedInvoiceId, setSelectedInvoiceId] = useState(paymentInvoiceId);
-  const duplicates = useMemo(() => preview ? findInvoiceDuplicates(preview.rows, preview.rowNumbers, registeredInvoices) : [],
-    [preview, registeredInvoices]);
-  const previewErrors = [...duplicates.map(({ sourceRow, reason }) => `Fila ${sourceRow}: ${reason}`), ...(preview?.errors ?? [])];
+  const duplicateRows = useMemo(() => preview ? findInvoiceDuplicateRows(preview.rows, preview.rowNumbers, registeredInvoices, providers) : [],
+    [preview, registeredInvoices, providers]);
+  const duplicateCount = duplicateRows.length;
+  const previewErrors = preview?.errors ?? [];
+  const canImport = Boolean(preview?.rows.length) && !duplicateCount && !previewErrors.length;
+  const unassignedInvoices = kind === "supplier" ? registeredInvoices.filter((invoice) => !invoice.supplierId) : [];
   const selectedInvoice = paymentInvoices.find((invoice) => invoice.id === selectedInvoiceId);
   const pendingBalance = selectedInvoice?.pendingBalance ?? selectedInvoice?.amount;
   const effectiveDue = due || dueDate(issue, Number(creditDays));
@@ -75,13 +95,13 @@ export function Modal({
   const remainingAfterPayment = amountCents > 0 && amountCents <= balanceCents
     ? (balanceCents - amountCents) / 100 : undefined;
   const inputRef = useRef<HTMLInputElement>(null);
-  const headerIcon = { invoice: ReceiptText, payment: Wallet, import: FileUp };
-  const HeaderIcon = kind === "supplier" || kind === "loan" ? undefined : headerIcon[kind];
+  const headerIcon = { invoice: ReceiptText, supplier: UsersRound, payment: Wallet, import: FileUp };
+  const HeaderIcon = kind === "loan" ? undefined : headerIcon[kind];
   const meta = {
     invoice: ["Nueva factura", "Registra una cuenta por pagar de proveedor."],
     supplier: [
-      "Nuevo proveedor",
-      "Agrega un proveedor al directorio del grupo.",
+      supplier ? "Editar proveedor" : "Nuevo proveedor",
+      "Completa sus datos y vincula facturas si corresponde.",
     ],
     payment: [
       "Registrar pago",
@@ -130,9 +150,9 @@ export function Modal({
     });
   };
   const discardDuplicates = () => {
-    if (!preview || !duplicates.length || busy) return;
-    setDiscardedCount((count) => count + duplicates.length);
-    setPreview(discardInvoiceDuplicates(preview, duplicates));
+    if (!preview || !duplicateCount || busy) return;
+    setDiscardedCount((count) => count + duplicateCount);
+    setPreview(discardInvoiceDuplicates(preview, duplicateRows));
     setPreviewPage(0);
     setOperationError("");
   };
@@ -140,7 +160,7 @@ export function Modal({
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     if (kind === "invoice") void run(() => onInvoice(data));
-    if (kind === "supplier") onSupplier(data);
+    if (kind === "supplier") void run(() => onSupplier(data));
     if (kind === "payment" && !busy) void run(() => onPayment(data));
     if (kind === "loan") onLoan(data);
   };
@@ -234,21 +254,25 @@ export function Modal({
             {operationError && <p role="alert" className="invoice-form-error">{operationError}</p>}
             {preview && (
               <section className="invoice-import-preview" aria-labelledby="invoice-preview-heading">
-                <div className="invoice-preview-heading">
-                  <div>
-                    <h3 id="invoice-preview-heading">Vista previa</h3>
-                    <p>{preview.sheetName} · {preview.rows.length} filas legibles{previewErrors.length ? ` · ${previewErrors.length} incidencias` : ""}</p>
-                  </div>
-                  {duplicates.length > 0 && (
-                    <button type="button" className="button-secondary" disabled={busy} onClick={discardDuplicates}>
-                      Descartar duplicadas ({duplicates.length})
+                <header className="invoice-preview-heading">
+                  <h3 id="invoice-preview-heading">Vista previa</h3>
+                  <p>{preview.sheetName} · {preview.rows.length} {preview.rows.length === 1 ? "fila legible" : "filas legibles"}</p>
+                </header>
+                {duplicateCount > 0 && (
+                  <div className="invoice-preview-duplicates">
+                    <div role="status">
+                      <strong>{duplicateCount === 1 ? "1 fila duplicada" : `${duplicateCount} filas duplicadas`}</strong>
+                      <p>Estas filas corresponden a facturas ya registradas o repetidas en el archivo. Descártalas para dejar solo las filas nuevas.</p>
+                    </div>
+                    <button type="button" className="button-secondary invoice-discard-button" disabled={busy} onClick={discardDuplicates}>
+                      <ListFilter size={16} aria-hidden="true" /> Descartar duplicados
                     </button>
-                  )}
-                </div>
+                  </div>
+                )}
                 {discardedCount > 0 && (
                   <p className="invoice-preview-feedback" role="status">
-                    {discardedCount} filas duplicadas descartadas.{" "}
-                    {preview.rows.length ? `Quedan ${preview.rows.length} filas en la vista previa.` : "No quedan filas nuevas."}
+                    {discardedCount === 1 ? "Se descartó 1 fila duplicada." : `Se descartaron ${discardedCount} filas duplicadas.`}{" "}
+                    {preview.rows.length === 0 && "No quedan filas nuevas para importar."}
                   </p>
                 )}
                 {previewRows.length > 0 && <>
@@ -266,9 +290,11 @@ export function Modal({
                     </table>
                   </div>
                   {preview.rows.length > PREVIEW_PAGE_SIZE && <div className="import-preview-pagination">
-                    <button type="button" className="button-secondary" disabled={busy || previewPage === 0} onClick={() => setPreviewPage(previewPage - 1)}>Anterior</button>
-                    <span>{previewOffset + 1}–{previewOffset + previewRows.length} de {preview.rows.length}</span>
-                    <button type="button" className="button-secondary" disabled={busy || previewOffset + previewRows.length >= preview.rows.length} onClick={() => setPreviewPage(previewPage + 1)}>Siguiente</button>
+                    <span>Filas {previewOffset + 1}–{previewOffset + previewRows.length} de {preview.rows.length}</span>
+                    <div>
+                      <button type="button" className="button-secondary" disabled={busy || previewPage === 0} onClick={() => setPreviewPage(previewPage - 1)}>Anterior</button>
+                      <button type="button" className="button-secondary" disabled={busy || previewOffset + previewRows.length >= preview.rows.length} onClick={() => setPreviewPage(previewPage + 1)}>Siguiente</button>
+                    </div>
                   </div>}
                 </>}
               </section>
@@ -282,13 +308,14 @@ export function Modal({
               </div>
             )}
             <footer className="modal-footer import-actions">
-              <button className="button-secondary" disabled={busy} onClick={onClose}>
+              <button type="button" className="button-secondary" disabled={busy} onClick={onClose}>
                 Cancelar
               </button>
               <button
+                type="button"
                 className="button-primary"
-                disabled={busy || !preview?.rows.length || !!previewErrors.length}
-                onClick={() => { if (preview?.rows.length && !previewErrors.length) void run(() => onImport(preview.rows)); }}
+                disabled={busy || !canImport}
+                onClick={() => { if (preview && canImport) void run(() => onImport(preview.rows)); }}
               >
                 <CloudUpload size={16} /> Importar facturas
               </button>
@@ -302,7 +329,14 @@ export function Modal({
                   <fieldset className="invoice-form-group form-full">
                     <legend>Datos de la factura</legend>
                     <div className="form-grid">
-                      <FormField label="Proveedor" name="supplier" required placeholder="Nombre del proveedor" />
+                      <div className="form-field">
+                        <label htmlFor="invoice-supplier">Proveedor <span className="required-star">*</span></label>
+                        <select id="invoice-supplier" name="supplierId" defaultValue={supplier?.proveedor_id ?? ""} required>
+                          <option value="" disabled>{providers.length ? "Selecciona un proveedor" : "No hay proveedores registrados"}</option>
+                          <SupplierOptions providers={providers} />
+                        </select>
+                        {!providers.length && <small>Registra un proveedor desde el módulo Proveedores.</small>}
+                      </div>
                       <FormField label="Restaurante" name="restaurant" required select options={restaurants} />
                       <div className="form-field">
                         <label htmlFor="invoice-document-kind">Tipo de documento</label>
@@ -359,50 +393,37 @@ export function Modal({
               )}
               {kind === "supplier" && (
                 <>
-                  <FormField
-                    label="Nombre o razón social"
-                    name="name"
-                    required
-                    placeholder="Ej. Aexpress Nicaragua"
-                  />
-                  <FormField
-                    label="Código de proveedor"
-                    name="code"
-                    required
-                    placeholder="Ej. PRV-007"
-                  />
-                  <FormField
-                    label="RUC / identificación"
-                    name="taxId"
-                    required
-                    placeholder="Número de identificación"
-                  />
-                  <FormField
-                    label="Contacto"
-                    name="contact"
-                    placeholder="Nombre de contacto"
-                  />
-                  <FormField
-                    label="Correo electrónico"
-                    name="email"
-                    type="email"
-                    placeholder="proveedor@correo.com"
-                  />
-                  <FormField
-                    label="Teléfono"
-                    name="phone"
-                    placeholder="+505 0000 0000"
-                  />
-                  <FormField
-                    label="Banco"
-                    name="bank"
-                    placeholder="Nombre del banco"
-                  />
-                  <FormField
-                    label="Cuenta bancaria"
-                    name="account"
-                    placeholder="Últimos dígitos o referencia"
-                  />
+                  <fieldset className="invoice-form-group form-full" disabled={busy}>
+                    <legend>Datos del proveedor</legend>
+                    <div className="form-grid">
+                      {SUPPLIER_FIELDS.map(({ name, label, required, type, placeholder }) => {
+                        const isRequired = required && (name !== "ruc" || !supplier || !!supplier.ruc);
+                        return <div className="form-field" key={name}>
+                          <label htmlFor={`supplier-${name}`}>{label}{isRequired && <span className="required-star"> *</span>}</label>
+                          <input id={`supplier-${name}`} name={name} type={type} required={isRequired} maxLength={200}
+                            defaultValue={supplier?.[name] ?? ""} placeholder={placeholder} pattern={name === "ruc" ? "[A-Za-z0-9 \\-]+" : undefined} />
+                        </div>;
+                      })}
+                      <div className="form-field">
+                        <label htmlFor="supplier-currency">Moneda preferida</label>
+                        <select id="supplier-currency" name="moneda_preferida" defaultValue={supplier?.moneda_preferida === "USD" ? "USD" : "NIO"}>
+                          <option value="NIO">Córdobas (NIO)</option><option value="USD">Dólares (USD)</option>
+                        </select>
+                      </div>
+                    </div>
+                  </fieldset>
+                  <fieldset className="invoice-form-group form-full" disabled={busy}>
+                    <legend>Asociar facturas existentes</legend>
+                    <div className="supplier-invoice-options">
+                      {!unassignedInvoices.length && <p>No hay facturas sin proveedor. Puedes registrar una desde la ficha del proveedor.</p>}
+                      {unassignedInvoices.map((invoice) => (
+                        <label key={invoice.id}>
+                          <input type="checkbox" name="invoiceIds" value={invoice.id} />
+                          <span>{invoice.id} · {invoice.code} · {invoice.restaurant} · {money(invoice.amount)}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
                 </>
               )}
               {kind === "payment" && (
@@ -535,7 +556,7 @@ export function Modal({
               >
                 Cancelar
               </button>
-              <button type="submit" className="button-primary" disabled={busy || (kind === "payment" && !selectedInvoice) || (kind === "invoice" && !restaurants.length)}>
+              <button type="submit" className="button-primary" disabled={busy || (kind === "payment" && !selectedInvoice) || (kind === "invoice" && (!restaurants.length || !providers.length))}>
                 <Check size={16} /> Guardar{" "}
                 {kind === "invoice"
                   ? "factura"

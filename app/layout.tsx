@@ -3,7 +3,7 @@ import type { Metadata, Viewport } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'Cuenta Clara | Facturas por pagar',
+  title: 'Facturas por pagar',
   description: 'Administra facturas, proveedores, pagos y préstamos en un solo lugar.',
   generator: 'v0.app',
   icons: {

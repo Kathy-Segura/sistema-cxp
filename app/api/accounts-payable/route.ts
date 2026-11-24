@@ -4,6 +4,7 @@ import { PAYMENT_METHODS, type PaymentMethod } from "@/types";
 import { moneyCents } from "@/lib/invoice-balances";
 import { isoDate } from "@/utils/formatters";
 import { resolveInvoiceNumber } from "@/lib/invoice-identity";
+import type { SupplierInput } from "@/types";
 
 let pendingWrite = Promise.resolve();
 function write<T>(operation: () => Promise<T>) {
@@ -13,6 +14,10 @@ function write<T>(operation: () => Promise<T>) {
 }
 
 export const dynamic = "force-dynamic";
+
+function validId(id: unknown): id is string {
+  return typeof id === "string" && id.length <= 128 && id.trim() === id && id.length > 0;
+}
 
 export async function GET() {
   try {
@@ -26,6 +31,37 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
+    if (body.action === "assignInvoiceSupplier") {
+      const { invoiceId, supplierId, expectedSupplierId, confirmedReassignment } = body;
+      if (!validId(invoiceId) || !validId(supplierId) || (expectedSupplierId !== "" && !validId(expectedSupplierId))) {
+        return NextResponse.json({ error: "Selecciona una factura y un proveedor registrado." }, { status: 400 });
+      }
+      if (expectedSupplierId && expectedSupplierId !== supplierId && confirmedReassignment !== true) {
+        return NextResponse.json({ error: "Confirma el cambio de proveedor de esta factura." }, { status: 400 });
+      }
+      return NextResponse.json(await write(() => new AccountsPayableRepository().assignInvoiceSupplier(invoiceId, supplierId, expectedSupplierId)));
+    }
+    if (body.action === "saveSupplier") {
+      const raw = body.supplier ?? {};
+      const field = (name: string) => typeof raw[name] === "string" ? raw[name].trim() : "";
+      const currency = field("moneda_preferida");
+      const supplierId = body.supplierId ?? "";
+      const invoiceIds = body.invoiceIds ?? [];
+      const supplier: SupplierInput = {
+        nombre_legal: field("nombre_legal"), nombre_comercial: field("nombre_comercial"),
+        codigo_proveedor: field("codigo_proveedor"), ruc: field("ruc"), telefono: field("telefono"), email: field("email"),
+        banco: field("banco"), cuenta_bancaria: field("cuenta_bancaria"), moneda_preferida: currency === "USD" ? "USD" : "NIO",
+      };
+      if (!supplier.nombre_legal || (!supplierId && !supplier.ruc) ||
+        (supplier.ruc && (!/^[A-Za-z0-9 -]+$/.test(supplier.ruc) || !/[A-Za-z0-9]/.test(supplier.ruc))) ||
+        (supplier.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(supplier.email)) ||
+        !["NIO", "USD"].includes(currency) || Object.values(supplier).some((value) => value.length > 200) ||
+        (supplierId !== "" && !validId(supplierId)) || !Array.isArray(invoiceIds) || !invoiceIds.every(validId)) {
+        return NextResponse.json({ error: "Revisa el nombre legal, el RUC, la moneda, el correo y las facturas seleccionadas." }, { status: 400 });
+      }
+      const result = await write(() => new AccountsPayableRepository().saveSupplier(supplier, supplierId, [...new Set<string>(invoiceIds)]));
+      return NextResponse.json(result, { status: supplierId ? 200 : 201 });
+    }
     if (body.action === "recordPayment") {
       const payment = body.payment ?? {};
       const input = {
@@ -48,7 +84,7 @@ export async function POST(request: Request) {
       const restaurant = String(invoice.restaurant ?? "").trim();
       const issue = isoDate(invoice.issue);
       return {
-        supplier: String(invoice.supplier ?? "").trim(), restaurant, issue, due: isoDate(invoice.due),
+        supplier: String(invoice.supplier ?? "").trim(), supplierId: String(invoice.supplierId ?? "").trim(), restaurant, issue, due: isoDate(invoice.due),
         number: resolveInvoiceNumber(String(invoice.number ?? ""), issue, restaurant),
         amount: Number(invoice.amount),
       };
@@ -59,8 +95,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Revisa proveedor, restaurante, número, fechas y monto de las facturas." }, { status: 400 });
     }
     const origin = body.origin === "IMPORTACION" || invoices.length > 1 ? "IMPORTACION" : "MANUAL";
-    const ids = await write(() => new AccountsPayableRepository().createInvoices(invoices, origin));
-    return NextResponse.json({ created: ids.length, ids }, { status: 201 });
+    const result = await write(() => new AccountsPayableRepository().createInvoices(invoices, origin));
+    return NextResponse.json({ created: result.ids.length, ...result }, { status: 201 });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "No se pudieron guardar las facturas." },
       { status: error instanceof InvoiceOperationError ? error.status : 500 });

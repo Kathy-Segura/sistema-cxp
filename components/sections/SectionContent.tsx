@@ -1,6 +1,6 @@
 "use client";
 import {
-  ArrowLeftRight, ArrowUpRight, CalendarDays, ChevronDown, CloudUpload, FileDown,
+  ArrowLeftRight, CalendarDays, ChevronDown, CloudUpload, FileDown,
   Filter, HandCoins, Plus, Search, ShieldCheck, SlidersHorizontal, X,
 } from "lucide-react";
 
@@ -14,15 +14,14 @@ import { ActionButtons } from "../shared/ActionButtons";
 import { ProfileContent } from "../forms/ProfileContent";
 
 export function SectionContent({
-  section, invoices, duplicateInvoiceIds, suppliers, payments, loans, users, search, setSearch, filter,
+  section, invoices, duplicateInvoiceIds, payments, loans, users, search, setSearch, filter,
   setFilter, dateType, setDateType, dateFrom, setDateFrom, dateTo, setDateTo,
   restaurantFilter, setRestaurantFilter, restaurantOptions, onClearFilters, page,
   setPage, pageSize, setPageSize, onCreate, onExport, onToast, onPay, logs, onAction,
 }: {
-  section: Section;
+  section: Exclude<Section, "Proveedores">;
   invoices: Invoice[];
   duplicateInvoiceIds: ReadonlySet<string>;
-  suppliers: Row[];
   payments: Row[];
   loans: Row[];
   users: Row[];
@@ -45,7 +44,7 @@ export function SectionContent({
   pageSize: number;
   setPageSize: (value: number) => void;
   onCreate: (
-    kind: "invoice" | "supplier" | "payment" | "loan" | "import",
+    kind: "invoice" | "payment" | "loan" | "import",
   ) => void;
   onExport: () => void;
   onToast: (value: string) => void;
@@ -61,18 +60,8 @@ export function SectionContent({
   if (section === "Mi perfil") return <ProfileContent />;
   const meta = sectionsMeta[section];
   const Icon = meta.icon;
-  const searchable =
-    section === "Facturas" ||
-    section === "Proveedores" ||
-    section === "Transferencias";
   let rows: Row[] = [];
   if (section === "Facturas") rows = invoices;
-  if (section === "Proveedores")
-    rows = suppliers.filter((row) =>
-      `${row.name} ${row.code} ${row.id}`
-        .toLowerCase()
-        .includes(search.toLowerCase()),
-    );
   if (section === "Transferencias")
     rows = payments.filter((row) =>
       `${row.supplier} ${row.ref} ${row.restaurant}`
@@ -88,9 +77,7 @@ export function SectionContent({
     onCreate(
       section === "Facturas"
         ? "invoice"
-        : section === "Proveedores"
-          ? "supplier"
-          : section === "Transferencias"
+        : section === "Transferencias"
             ? "payment"
             : "loan",
     );
@@ -119,16 +106,13 @@ export function SectionContent({
             </button>
           )}
           {(section === "Facturas" ||
-            section === "Proveedores" ||
             section === "Transferencias" ||
             section === "Préstamos") && (
             <button className="button-primary" onClick={create}>
               <Plus size={17} />{" "}
               {section === "Facturas"
                 ? "Nueva factura"
-                : section === "Proveedores"
-                  ? "Nuevo proveedor"
-                  : section === "Transferencias"
+                : section === "Transferencias"
                     ? "Registrar pago"
                     : "Nuevo préstamo"}
             </button>
@@ -136,7 +120,6 @@ export function SectionContent({
         </div>
       </div>
       {(section === "Facturas" ||
-        section === "Proveedores" ||
         section === "Transferencias") && (
         <div className="filter-bar">
           <label className="table-search">
@@ -145,9 +128,7 @@ export function SectionContent({
               placeholder={
                 section === "Facturas"
                   ? "Buscar proveedor, factura..."
-                  : section === "Proveedores"
-                    ? "Buscar proveedor..."
-                    : "Buscar transferencia..."
+                  : "Buscar transferencia..."
               }
               value={search}
               onChange={(e) => {
@@ -264,78 +245,6 @@ export function SectionContent({
             pageSize={pageSize}
             setPage={setPage}
             setPageSize={setPageSize}
-          />
-        </div>
-      )}
-      {section === "Proveedores" && (
-        <div className="panel table-panel">
-          <div className="table-scroll">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>CÓDIGO / PROVEEDOR</th>
-                  <th>IDENTIFICACIÓN</th>
-                  <th>FACTURAS</th>
-                  <th>CUENTA BANCARIA</th>
-                  <th className="align-right">SALDO PENDIENTE</th>
-                  <th>ESTADO</th>
-                  <th>ACCIONES</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(visibleRows as Row[]).map((r) => (
-                  <tr key={String(r.code)}>
-                    <td>
-                      <div className="supplier-cell">
-                        <span className="supplier-avatar supplier-avatar-purple">
-                          {String(r.name)
-                            .split(" ")
-                            .map((w) => w[0])
-                            .slice(0, 2)
-                            .join("")}
-                        </span>
-                        <span>
-                          <strong>{String(r.name)}</strong>
-                          <small>{String(r.code)}</small>
-                        </span>
-                      </div>
-                    </td>
-                    <td>{String(r.id)}</td>
-                    <td>
-                      <button
-                        className="link-button"
-                        onClick={() => {
-                          setSearch(String(r.name));
-                        }}
-                      >
-                        {" "}
-                        {r.invoices} facturas <ArrowUpRight size={12} />
-                      </button>
-                    </td>
-                    <td>{String(r.bank)}</td>
-                    <td className="align-right amount-cell">
-                      {money(Number(r.balance))}
-                    </td>
-                    <td>
-                      <StatusBadge status={String(r.state)} />
-                    </td>
-                    <td>
-                      <ActionButtons
-                        label={`proveedor ${r.name}`}
-                        onAction={(action) => onAction(section, r, action)}
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <Pagination
-            page={page}
-            pages={totalPages}
-            total={rows.length}
-            pageSize={pageSize}
-            setPage={setPage}
           />
         </div>
       )}
