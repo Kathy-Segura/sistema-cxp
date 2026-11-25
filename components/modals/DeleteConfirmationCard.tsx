@@ -7,11 +7,13 @@ export function DeleteConfirmationCard({
   label,
   onClose,
   onConfirm,
+  recordName = "factura",
 }: {
   id: string;
   label: string;
   onClose: () => void;
   onConfirm: () => Promise<void>;
+  recordName?: string;
 }) {
   const [step, setStep] = useState(1);
   const [value, setValue] = useState("");
@@ -27,7 +29,7 @@ export function DeleteConfirmationCard({
     setSaving(true);
     setError("");
     try { await onConfirm(); }
-    catch (error) { setError(error instanceof Error ? error.message : "No se pudo eliminar la factura."); }
+    catch (error) { setError(error instanceof Error ? error.message : "No se pudo eliminar el registro."); }
     finally { setSaving(false); }
   };
   const prompt =
@@ -47,7 +49,7 @@ export function DeleteConfirmationCard({
         <header className="modal-header">
           <div>
             <span className="modal-kicker">CONFIRMACIÓN DE ELIMINACIÓN</span>
-            <h2 id="delete-title">Eliminar factura</h2>
+            <h2 id="delete-title">Eliminar {recordName}</h2>
             <p>{label}</p>
           </div>
           <button
@@ -69,7 +71,7 @@ export function DeleteConfirmationCard({
             <input
               className="delete-confirmation-input"
               key={step}
-              aria-label={step === 2 ? "ID interno de la factura" : "Escribe ELIMINAR"}
+              aria-label={step === 2 ? "ID interno del registro" : "Escribe ELIMINAR"}
               autoFocus
               disabled={saving}
               value={value}

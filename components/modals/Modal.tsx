@@ -248,7 +248,7 @@ export function Modal({
               <Check size={15} />
               <span>
                 Elige el restaurante de la lista, usa fechas AAAA-MM-DD o DD/MM/AAAA y escribe el monto como número. La categoría se calcula según el plazo.
-                Para un servicio, escribe Renta, Préstamo u Otro en No. Factura. Puedes añadir una referencia, por ejemplo «Renta: contrato 14».
+                Para un cargo puntual, puedes escribir «Renta», «Préstamo» u «Otro» en No. Factura y añadir una referencia. Registra los cargos recurrentes en Gastos fijos.
               </span>
             </div>
             {operationError && <p role="alert" className="invoice-form-error">{operationError}</p>}
@@ -343,8 +343,9 @@ export function Modal({
                         <select id="invoice-document-kind" name="documentKind" value={documentKind}
                           onChange={(event) => setDocumentKind(event.target.value)}>
                           <option>Factura</option>
-                          {SERVICE_TYPES.map((type) => <option key={type}>{type}</option>)}
+                          {SERVICE_TYPES.map((type) => <option key={type} value={type}>{type} (cargo puntual)</option>)}
                         </select>
+                        <small>Registra los cargos recurrentes en Gastos fijos.</small>
                       </div>
                       {documentKind === "Factura" ? (
                         <FormField label="N.º de factura" name="number" required placeholder="Número emitido por el proveedor" />

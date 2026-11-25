@@ -1,5 +1,6 @@
 import {
   ArrowLeftRight,
+  CalendarClock,
   FileText,
   HandCoins,
   ShieldCheck,
@@ -12,10 +13,15 @@ export const sectionsMeta: Record<
   { title: string; description: string; icon: any }
 > = {
   Facturas: {
-    title: "Facturas por pagar",
+    title: "Facturas de compras",
     description:
-      "Administra y da seguimiento a las facturas de tus proveedores.",
+      "Administra compras variables y cargos puntuales de tus proveedores.",
     icon: FileText,
+  },
+  "Gastos fijos": {
+    title: "Gastos fijos",
+    description: "Consulta las obligaciones recurrentes y sus próximos vencimientos.",
+    icon: CalendarClock,
   },
   Proveedores: {
     title: "Proveedores",

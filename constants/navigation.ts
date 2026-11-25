@@ -4,6 +4,7 @@ import {
   FileText,
   HandCoins,
   LayoutDashboard,
+  CalendarClock,
   ShieldCheck,
   UserRound,
   Users,
@@ -13,6 +14,7 @@ import type { Section } from "../types";
 export const nav: { name: Section; icon: typeof LayoutDashboard }[] = [
   { name: "Resumen", icon: LayoutDashboard },
   { name: "Facturas", icon: FileText },
+  { name: "Gastos fijos", icon: CalendarClock },
   { name: "Proveedores", icon: Users },
   { name: "Transferencias", icon: ArrowLeftRight },
   { name: "Préstamos", icon: HandCoins },

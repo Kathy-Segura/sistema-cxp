@@ -4,7 +4,7 @@ import * as XLSX from "xlsx";
 import {
   Bell, Check, Menu, Search, UserRound, WalletCards, X,
 } from "lucide-react";
-import type { FacturaRecord, Invoice, InvoiceStatus, PagoRecord, PrestamoRecord, PrestamoSaldoRecord, ProveedorRecord, Section, Row, RowAction } from "../types";
+import type { FacturaRecord, FixedExpenseInput, FixedExpensePayment, FixedExpensePaymentChange, GastoFijoRecord, Invoice, InvoiceStatus, PagoRecord, PrestamoRecord, PrestamoSaldoRecord, ProveedorRecord, RestaurantOption, Section, Row, RowAction } from "../types";
 import {
   initialInvoices, payments, loans, teamUsers, activity,
 } from "../data/initial-data";
@@ -19,6 +19,7 @@ import { InvoiceSupplierModal } from "../components/modals/InvoiceSupplierModal"
 import { DeleteConfirmationCard } from "../components/modals/DeleteConfirmationCard";
 import { SectionContent } from "../components/sections/SectionContent";
 import { SupplierSection } from "../components/sections/SupplierSection";
+import { FixedExpensesSection } from "../components/sections/FixedExpensesSection";
 import { Overview } from "../components/overview/Overview";
 import { useToast } from "../hooks/useToast";
 import { useInvoiceFilters } from "../hooks/useInvoiceFilters";
@@ -32,6 +33,8 @@ export function AccountsPayableApp() {
   const [section, setSection] = useState<Section>("Resumen");
   const [invoices, setInvoices] = useState(initialInvoices);
   const [supplierRecords, setSupplierRecords] = useState<ProveedorRecord[]>([]);
+  const [fixedExpenses, setFixedExpenses] = useState<GastoFijoRecord[]>([]);
+  const [fixedExpensePayments, setFixedExpensePayments] = useState<FixedExpensePayment[]>([]);
   const [supplierContext, setSupplierContext] = useState<ProveedorRecord>();
   const [invoiceSupplier, setInvoiceSupplier] = useState<ProveedorRecord>();
   const [dashboardLoading, setDashboardLoading] = useState(true);
@@ -56,7 +59,8 @@ export function AccountsPayableApp() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [restaurantFilter, setRestaurantFilter] = useState("Todos los restaurantes");
-  const [restaurantOptions, setRestaurantOptions] = useState<string[]>([]);
+  const [restaurants, setRestaurants] = useState<RestaurantOption[]>([]);
+  const restaurantOptions = [...new Set(restaurants.map(({ name }) => name))];
   const [page, setPage] = useState(1);
   const { toast, showToast } = useToast();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -68,10 +72,13 @@ export function AccountsPayableApp() {
         if (!response.ok) throw new Error((await response.json()).error);
         return response.json();
       })
-      .then((data: { facturas: FacturaRecord[]; proveedores: ProveedorRecord[]; pagos: PagoRecord[]; prestamos: PrestamoRecord[]; prestamo_saldos: PrestamoSaldoRecord[]; restaurantes: Row[]; usuarios: Row[]; bitacora: Row[] }) => {
+      .then((data: { facturas: FacturaRecord[]; proveedores: ProveedorRecord[]; pagos: PagoRecord[]; gastos_fijos: GastoFijoRecord[]; gastos_fijos_pagos: FixedExpensePayment[]; prestamos: PrestamoRecord[]; prestamo_saldos: PrestamoSaldoRecord[]; restaurantes: Row[]; usuarios: Row[]; bitacora: Row[] }) => {
         if (!active) return;
         const restaurantName = new Map(data.restaurantes.map((row) => [String(row.restaurante_id), String(row.nombre)]));
-        setRestaurantOptions([...new Set(data.restaurantes.map((row) => String(row.nombre ?? "").trim()).filter(Boolean))]);
+        setRestaurants(data.restaurantes.map((row) => ({ id: String(row.restaurante_id ?? "").trim(), name: String(row.nombre ?? "").trim() }))
+          .filter(({ id, name }) => id && name));
+        setFixedExpenses(data.gastos_fijos.filter((expense) => expense.gasto_fijo_id));
+        setFixedExpensePayments(data.gastos_fijos_pagos ?? []);
         const providersById = new Map(data.proveedores.map((item) => [item.proveedor_id, item]));
         const latestPaymentDates = new Map<string, string>();
         for (const payment of data.pagos) {
@@ -158,6 +165,46 @@ export function AccountsPayableApp() {
     if (!audit.length) return;
     setLogs((current) => [...audit.map((item) => ({ who: item.usuario_id, initials: String(item.usuario_id).slice(0, 2),
       action: item.accion, detail: `${item.entidad} · ${item.entidad_id}`, date: item.fecha_hora })), ...current]);
+  };
+  const saveFixedExpense = async (input: FixedExpenseInput, original?: GastoFijoRecord) => {
+    const response = await fetch("/api/accounts-payable", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "saveFixedExpense", expense: input, expenseId: original?.gasto_fijo_id,
+        expectedUpdatedAt: original?.actualizado_en ?? "" }),
+    });
+    if (!response.ok) throw new Error((await response.json()).error || "No se pudo guardar el gasto fijo.");
+    const { expense, audit }: { expense: GastoFijoRecord; audit: Row } = await response.json();
+    setFixedExpenses((current) => original
+      ? current.map((item) => item.gasto_fijo_id === expense.gasto_fijo_id ? expense : item)
+      : [expense, ...current]);
+    appendAudit([audit]);
+    showToast(original ? "Gasto fijo actualizado" : "Gasto fijo registrado");
+  };
+  const deleteFixedExpense = async (expense: GastoFijoRecord) => {
+    const expenseId = expense.gasto_fijo_id;
+    const response = await fetch("/api/accounts-payable", {
+      method: "DELETE", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expenseId, expectedUpdatedAt: expense.actualizado_en ?? "" }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "No se pudo eliminar el gasto fijo.");
+    if (!result.deleted || result.expenseId !== expenseId) throw new Error("La API no confirmó la eliminación del gasto fijo.");
+    setFixedExpenses((current) => current.filter((item) => item.gasto_fijo_id !== expenseId));
+    if (result.audit) appendAudit([result.audit]);
+    showToast("Gasto fijo eliminado");
+  };
+  const setFixedExpensePayment = async (change: FixedExpensePaymentChange) => {
+    const response = await fetch("/api/accounts-payable", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "setFixedExpensePayment", ...change }),
+    });
+    const result: { error?: string; payment?: FixedExpensePayment; audit?: Row } = await response.json();
+    if (!response.ok) throw new Error(result.error || "No se pudo actualizar el pago.");
+    const payment = result.payment;
+    if (payment) setFixedExpensePayments((current) => [payment, ...current.filter((record) =>
+      record.gasto_fijo_id !== payment.gasto_fijo_id || record.periodo !== payment.periodo)]);
+    if (result.audit) appendAudit([result.audit]);
+    showToast(change.paidDate ? "Pago del gasto fijo registrado" : "Pago del gasto fijo revertido");
   };
   const assignInvoiceSupplier = async (invoiceId: string, supplierId: string, expectedSupplierId: string, confirmedReassignment: boolean) => {
     const response = await fetch("/api/accounts-payable", {
@@ -483,6 +530,10 @@ export function AccountsPayableApp() {
               onCreate={() => setModal("invoice")}
               onImport={openImport}
             />
+          ) : section === "Gastos fijos" ? (
+            <FixedExpensesSection expenses={fixedExpenses} providers={supplierRecords} restaurants={restaurants}
+              loading={dashboardLoading} error={dashboardError} onSave={saveFixedExpense} onDelete={deleteFixedExpense}
+              payments={fixedExpensePayments} onPaymentChange={setFixedExpensePayment} />
           ) : section === "Proveedores" ? (
             <SupplierSection providers={supplierRecords} invoices={invoices} loading={dashboardLoading} error={dashboardError}
               onCreate={() => { setSupplierContext(undefined); setModal("supplier"); }}

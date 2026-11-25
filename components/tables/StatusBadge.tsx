@@ -1,2 +1,8 @@
 
-export function StatusBadge({ status }: { status: string }) { const cls = status === "Pagada" || status === "Completada" || status === "Activo" ? "status-green" : status === "Vencida" ? "status-red" : status === "En proceso" ? "status-blue" : "status-amber"; return <span className={`status-badge ${cls}`}><i />{status}</span> }
+export function StatusBadge({ status }: { status: string }) {
+  const cls = ["Pagada", "Pagado", "Completada", "Activo"].includes(status) ? "status-green"
+    : ["Vencida", "Vencido"].includes(status) ? "status-red"
+      : status === "En proceso" ? "status-blue"
+        : status === "Sin cuota" ? "status-neutral" : "status-amber";
+  return <span className={`status-badge ${cls}`}><i />{status}</span>;
+}

@@ -12,7 +12,7 @@ const green = "#E2F0D9";
 const red = "#FCE4D6";
 
 const sheets = {};
-for (const name of ["Dashboard", "facturas", "proveedores", "pagos", "gastos_fijos", "prestamos", "prestamo_saldos", "restaurantes", "usuarios", "bitacora", "catalogos"]) {
+for (const name of ["Dashboard", "facturas", "proveedores", "pagos", "gastos_fijos", "gastos_fijos_pagos", "prestamos", "prestamo_saldos", "restaurantes", "usuarios", "bitacora", "catalogos"]) {
   sheets[name] = wb.worksheets.add(name);
   sheets[name].showGridLines = false;
   sheets[name].tabColor = name === "Dashboard" ? navy : "#5B9BD5";
@@ -58,9 +58,14 @@ title(sheets.pagos, "Pagos y transferencias", col(pagoHeaders.length)); header(s
 sheets.pagos.getRange("F4:F100").format.numberFormat = "yyyy-mm-dd"; sheets.pagos.getRange("J4:J100").format.numberFormat = "#,##0.00";
 sheets.pagos.getRange("G4:G100").dataValidation = { rule: { type: "list", formula1: "catalogos!$E$3:$E$5" } };
 
-const fijoHeaders = ["gasto_fijo_id", "codigo_gasto", "proveedor_id", "restaurante_id", "categoria", "descripcion", "moneda", "monto_estimado", "dia_vencimiento", "activo", "fecha_inicio", "fecha_fin", "creado_por", "creado_en", "actualizado_en"];
-title(sheets.gastos_fijos, "Gastos fijos: plantillas recurrentes; cada obligación genera una factura.", col(fijoHeaders.length)); header(sheets.gastos_fijos, fijoHeaders); widths(sheets.gastos_fijos, [16,16,16,16,18,34,10,16,16,10,14,14,16,20,20]);
-sheets.gastos_fijos.getRange("H4:H100").format.numberFormat = "#,##0.00"; sheets.gastos_fijos.getRange("K4:L100").format.numberFormat = "yyyy-mm-dd";
+const fijoHeaders = ["gasto_fijo_id", "codigo_gasto", "proveedor_id", "restaurante_id", "categoria", "numero_referencia", "descripcion", "moneda", "monto_estimado", "dia_vencimiento", "activo", "fecha_inicio", "fecha_fin", "creado_por", "creado_en", "actualizado_en"];
+title(sheets.gastos_fijos, "Gastos fijos: obligaciones recurrentes y su vigencia mensual.", col(fijoHeaders.length)); header(sheets.gastos_fijos, fijoHeaders); widths(sheets.gastos_fijos, [16,16,16,16,18,22,34,10,16,16,10,14,14,16,20,20]);
+sheets.gastos_fijos.getRange("F4:F100").format.numberFormat = "@"; sheets.gastos_fijos.getRange("I4:I100").format.numberFormat = "#,##0.00"; sheets.gastos_fijos.getRange("L4:M100").format.numberFormat = "yyyy-mm-dd";
+
+const fijoPagoHeaders = ["gasto_fijo_id", "periodo", "fecha_pago", "actualizado_por", "actualizado_en"];
+title(sheets.gastos_fijos_pagos, "Pagos de gastos fijos por mes", col(fijoPagoHeaders.length));
+header(sheets.gastos_fijos_pagos, fijoPagoHeaders); widths(sheets.gastos_fijos_pagos, [18,14,16,18,24]);
+sheets.gastos_fijos_pagos.getRange("B4:C100").format.numberFormat = "@";
 
 const prestamoHeaders = ["prestamo_id", "codigo_prestamo", "acreedor", "numero_prestamo", "titular", "restaurante_id", "destino", "fecha_apertura", "fecha_vencimiento", "moneda", "monto_inicial", "tasa_anual", "cuota_programada", "dia_pago", "estado", "notas", "creado_por", "creado_en", "actualizado_en"];
 title(sheets.prestamos, "Préstamos", col(prestamoHeaders.length)); header(sheets.prestamos, prestamoHeaders); widths(sheets.prestamos, [16,16,22,20,26,16,22,14,16,10,16,12,16,12,14,34,16,20,20]);

@@ -19,7 +19,7 @@ export function SectionContent({
   restaurantFilter, setRestaurantFilter, restaurantOptions, onClearFilters, page,
   setPage, pageSize, setPageSize, onCreate, onExport, onToast, onPay, logs, onAction,
 }: {
-  section: Exclude<Section, "Proveedores">;
+  section: Exclude<Section, "Gastos fijos" | "Proveedores">;
   invoices: Invoice[];
   duplicateInvoiceIds: ReadonlySet<string>;
   payments: Row[];

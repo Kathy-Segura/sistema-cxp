@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { AccountsPayableRepository, InvoiceOperationError } from "@/lib/accounts-payable-repository";
 import { PAYMENT_METHODS, type PaymentMethod } from "@/types";
-import { moneyCents } from "@/lib/invoice-balances";
+import { managuaDate, moneyCents } from "@/lib/invoice-balances";
 import { isoDate } from "@/utils/formatters";
 import { resolveInvoiceNumber } from "@/lib/invoice-identity";
-import type { SupplierInput } from "@/types";
+import { FIXED_EXPENSE_DESCRIPTION_LIMIT, FIXED_EXPENSE_REFERENCE_LIMIT } from "@/lib/fixed-expenses";
+import type { FixedExpenseInput, SupplierInput } from "@/types";
 
 let pendingWrite = Promise.resolve();
 function write<T>(operation: () => Promise<T>) {
@@ -31,6 +32,45 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
+    if (body.action === "setFixedExpensePayment") {
+      const { expenseId, period, paidDate, expectedPaidDate } = body;
+      const date = isoDate(paidDate);
+      if (!validId(expenseId) || typeof period !== "string" || !/^[1-9]\d{3}-(0[1-9]|1[0-2])$/.test(period) ||
+        typeof paidDate !== "string" || (paidDate !== "" && (!date || date > managuaDate())) ||
+        typeof expectedPaidDate !== "string" || (expectedPaidDate !== "" && !isoDate(expectedPaidDate))) {
+        return NextResponse.json({ error: "Revisa el período y la fecha de pago. La fecha de pago debe ser igual o anterior a hoy." }, { status: 400 });
+      }
+      return NextResponse.json(await write(() => new AccountsPayableRepository().setFixedExpensePayment({
+        expenseId, period, paidDate: date, expectedPaidDate,
+      })));
+    }
+    if (body.action === "saveFixedExpense") {
+      const raw = body.expense ?? {};
+      const field = (name: string) => typeof raw[name] === "string" ? raw[name].trim() : "";
+      const id = body.expenseId ?? "";
+      const expectedUpdatedAt = body.expectedUpdatedAt;
+      const currency = field("moneda");
+      const reference = field("numero_referencia");
+      const expense: FixedExpenseInput = {
+        descripcion: field("descripcion"), categoria: field("categoria"), proveedor_id: field("proveedor_id"),
+        numero_referencia: raw.numero_referencia === undefined ? undefined : reference,
+        restaurante_id: field("restaurante_id"), moneda: currency === "USD" ? "USD" : "NIO",
+        monto_estimado: raw.monto_estimado, dia_vencimiento: raw.dia_vencimiento, activo: raw.activo,
+        fecha_inicio: isoDate(field("fecha_inicio")), fecha_fin: isoDate(field("fecha_fin")),
+      };
+      if ((id !== "" && (!validId(id) || typeof expectedUpdatedAt !== "string")) ||
+        !expense.descripcion || expense.descripcion.length > FIXED_EXPENSE_DESCRIPTION_LIMIT || !expense.categoria || expense.categoria.length > 80 ||
+        (raw.numero_referencia !== undefined && (typeof raw.numero_referencia !== "string" || reference.length > FIXED_EXPENSE_REFERENCE_LIMIT)) ||
+        !["NIO", "USD"].includes(currency) || typeof expense.monto_estimado !== "number" || !(moneyCents(expense.monto_estimado) > 0) ||
+        !Number.isInteger(expense.dia_vencimiento) || expense.dia_vencimiento < 1 || expense.dia_vencimiento > 31 ||
+        typeof expense.activo !== "boolean" || !expense.fecha_inicio || (field("fecha_fin") && !expense.fecha_fin) ||
+        (expense.fecha_fin && expense.fecha_fin < expense.fecha_inicio) ||
+        (expense.proveedor_id && !validId(expense.proveedor_id)) || (expense.restaurante_id && !validId(expense.restaurante_id))) {
+        return NextResponse.json({ error: "Revisa la descripción, categoría, importe, día mensual y fechas de vigencia del gasto fijo." }, { status: 400 });
+      }
+      const result = await write(() => new AccountsPayableRepository().saveFixedExpense(expense, id, expectedUpdatedAt ?? ""));
+      return NextResponse.json(result, { status: id ? 200 : 201 });
+    }
     if (body.action === "assignInvoiceSupplier") {
       const { invoiceId, supplierId, expectedSupplierId, confirmedReassignment } = body;
       if (!validId(invoiceId) || !validId(supplierId) || (expectedSupplierId !== "" && !validId(expectedSupplierId))) {
@@ -105,7 +145,14 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
-    const { facturaId } = await request.json();
+    const { facturaId, expenseId, expectedUpdatedAt } = await request.json();
+    if (expenseId !== undefined) {
+      if (facturaId !== undefined || !validId(expenseId) || typeof expectedUpdatedAt !== "string") {
+        return NextResponse.json({ error: "Solicitud de eliminación del gasto fijo inválida." }, { status: 400 });
+      }
+      const audit = await write(() => new AccountsPayableRepository().deleteFixedExpense(expenseId, expectedUpdatedAt));
+      return NextResponse.json({ deleted: true, expenseId, audit });
+    }
     if (typeof facturaId !== "string" || !facturaId.trim() || facturaId.length > 128) {
       return NextResponse.json({ error: "ID de factura inválido." }, { status: 400 });
     }
@@ -113,7 +160,7 @@ export async function DELETE(request: Request) {
     await write(() => new AccountsPayableRepository().deleteInvoice(id));
     return NextResponse.json({ deleted: true, facturaId: id });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "No se pudo eliminar la factura." },
+    return NextResponse.json({ error: error instanceof Error ? error.message : "No se pudo eliminar el registro." },
       { status: error instanceof InvoiceOperationError ? error.status : 500 });
   }
 }

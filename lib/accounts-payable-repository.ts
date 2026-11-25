@@ -1,19 +1,20 @@
 import "server-only";
 import { getSheetsClient, getSpreadsheetId } from "./google-sheets";
-import type { FacturaRecord, PagoRecord, PrestamoRecord, PrestamoSaldoRecord, ProveedorRecord, SupplierInput } from "@/types";
+import type { FacturaRecord, FixedExpenseInput, FixedExpensePayment, FixedExpensePaymentChange, GastoFijoRecord, PagoRecord, PrestamoRecord, PrestamoSaldoRecord, ProveedorRecord, SupplierInput } from "@/types";
 import { invoiceBalance, invoiceCategory, managuaDate, moneyCents, moneyValue } from "./invoice-balances";
 import { isoDate } from "../utils/formatters";
 import { invoiceNumberKey, normalizeInvoiceIdentity } from "./invoice-identity";
+import { FIXED_EXPENSE_CATEGORIES, FIXED_EXPENSE_PAYMENT_HEADERS, FIXED_EXPENSE_PAYMENTS_TAB, fixedExpenseDueInPeriod } from "./fixed-expenses";
 
 type Primitive = string | number | boolean;
 type SheetRecord = Record<string, Primitive>;
-const tabs = ["facturas", "proveedores", "pagos", "gastos_fijos", "prestamos", "prestamo_saldos", "restaurantes", "usuarios", "bitacora"] as const;
+const tabs = ["facturas", "proveedores", "pagos", "gastos_fijos", FIXED_EXPENSE_PAYMENTS_TAB, "prestamos", "prestamo_saldos", "restaurantes", "usuarios", "bitacora"] as const;
 
-const numericColumns = new Set(["monto_total", "monto_pagado", "saldo_pendiente", "monto", "monto_inicial", "tasa_anual", "cuota_programada", "dia_pago", "saldo_inicial", "interes", "abono_capital", "cuota_pagada", "saldo_final"]);
+const numericColumns = new Set(["monto_total", "monto_pagado", "saldo_pendiente", "monto", "monto_inicial", "tasa_anual", "cuota_programada", "dia_pago", "dia_vencimiento", "saldo_inicial", "interes", "abono_capital", "cuota_pagada", "saldo_final"]);
 const booleanColumns = new Set(["activo"]);
 function scalar(header: string, value: unknown): Primitive {
   const source = String(value ?? "").trim();
-  if (["monto_total", "monto_pagado", "monto", "saldo_pendiente"].includes(header)) {
+  if (["monto_total", "monto_pagado", "monto", "saldo_pendiente", "monto_estimado"].includes(header)) {
     return source === "" ? 0 : moneyValue(value);
   }
   if (numericColumns.has(header)) return source === "" ? 0 : Number(source.replace(/[^\d.-]/g, "")) || 0;
@@ -100,7 +101,7 @@ function invoiceSupplierChanges({ invoiceValues, paymentValues, assignments, sup
 }
 
 export class InvoiceOperationError extends Error {
-  constructor(message: string, readonly status: 404 | 409) {
+  constructor(message: string, readonly status: 400 | 404 | 409) {
     super(message);
   }
 }
@@ -111,27 +112,141 @@ export class AccountsPayableRepository {
 
   async list<T extends object>(tab: (typeof tabs)[number]): Promise<T[]> {
     const { data } = await this.sheets.spreadsheets.values.get({
-      spreadsheetId: this.spreadsheetId, range: `${tab}!A3:ZZ`,
-      ...(tab === "facturas" || tab === "pagos" ? { valueRenderOption: "UNFORMATTED_VALUE", dateTimeRenderOption: "FORMATTED_STRING" } : {}),
+      spreadsheetId: this.spreadsheetId, range: `${tab}!A3:${tab === FIXED_EXPENSE_PAYMENTS_TAB ? "E" : "ZZ"}`,
+      ...(["facturas", "pagos", "gastos_fijos", FIXED_EXPENSE_PAYMENTS_TAB].includes(tab) ? { valueRenderOption: "UNFORMATTED_VALUE", dateTimeRenderOption: "FORMATTED_STRING" } : {}),
     });
     const [headers = [], ...rows] = data.values ?? [];
     return parseRecords<T>(headers, rows.filter((row) => row.some((value) => String(value ?? "").trim())));
   }
 
-  private async sheetIds() {
+  private async sheetDirectory() {
     const { data } = await this.sheets.spreadsheets.get({
       spreadsheetId: this.spreadsheetId, fields: "sheets.properties(sheetId,title)",
     });
+    const entries = new Map<string, number>();
+    for (const { properties } of data.sheets ?? []) {
+      if (properties?.title && properties.sheetId != null) entries.set(properties.title, properties.sheetId);
+    }
+    return entries;
+  }
+
+  private async sheetIds() {
+    const directory = await this.sheetDirectory();
     return (tab: string) => {
-      const id = data.sheets?.find((sheet) => sheet.properties?.title === tab)?.properties?.sheetId;
+      const id = directory.get(tab);
       if (id == null) throw new Error(`No existe la pestaña ${tab}.`);
       return id;
     };
   }
 
+  async setFixedExpensePayment({ expenseId, period, paidDate, expectedPaidDate }: FixedExpensePaymentChange, actor = "SISTEMA") {
+    const directory = await this.sheetDirectory();
+    const existingSheetId = directory.get(FIXED_EXPENSE_PAYMENTS_TAB);
+    const ranges = ["gastos_fijos!A3:ZZ", "bitacora!A3:ZZ3"];
+    if (existingSheetId !== undefined) ranges.push(`${FIXED_EXPENSE_PAYMENTS_TAB}!A3:E`);
+    const { data } = await this.sheets.spreadsheets.values.batchGet({ spreadsheetId: this.spreadsheetId,
+      ranges, valueRenderOption: "UNFORMATTED_VALUE", dateTimeRenderOption: "FORMATTED_STRING" });
+    const [expenses, auditRange, paidRange] = data.valueRanges ?? [];
+    const [headers = [], ...rows] = expenses?.values ?? [];
+    const matches = parseRecords<GastoFijoRecord>(headers, rows).filter(({ gasto_fijo_id }) => gasto_fijo_id === expenseId);
+    if (!matches.length) throw new InvoiceOperationError("No se encontró el gasto fijo.", 404);
+    if (matches.length !== 1) throw new InvoiceOperationError("El ID del gasto fijo está duplicado.", 409);
+    const [expense] = matches;
+    const [paymentHeaders = [], ...paymentRows] = paidRange?.values ?? [];
+    if (existingSheetId !== undefined) FIXED_EXPENSE_PAYMENT_HEADERS.forEach((field) => columnIndex(paymentHeaders, field));
+    const payments = parseRecords<FixedExpensePayment>(paymentHeaders, paymentRows);
+    const found = payments.filter((row) => row.gasto_fijo_id === expenseId && row.periodo === period);
+    if (found.length > 1) throw new InvoiceOperationError("El gasto tiene pagos duplicados para ese mes en Google Sheets.", 409);
+    const [current] = found;
+    const previous = current?.fecha_pago || "";
+    if (previous === paidDate) return { payment: current, audit: undefined };
+    if (previous !== expectedPaidDate) throw new InvoiceOperationError("El pago cambió. Actualiza la página y revisa el estado del mes.", 409);
+    if (paidDate && !current?.fecha_pago && !fixedExpenseDueInPeriod(expense, period)) {
+      throw new InvoiceOperationError("El gasto fijo no tiene una cuota vigente para ese mes.", 400);
+    }
+    const now = new Date().toISOString();
+    const payment: FixedExpensePayment = { gasto_fijo_id: expenseId, periodo: period, fecha_pago: paidDate, actualizado_por: actor, actualizado_en: now };
+    const audit = auditEntry(actor, now, paidDate ? "Registrar pago de gasto fijo" : "Revertir pago de gasto fijo",
+      FIXED_EXPENSE_PAYMENTS_TAB, `${expenseId}/${period}`, "fecha_pago", previous, paidDate);
+    const [auditHeaders = []] = auditRange?.values ?? [];
+    const auditId = directory.get("bitacora");
+    if (auditId === undefined) throw new Error("No existe la pestaña bitacora.");
+    const usedIds = new Set(directory.values());
+    let newSheetId = 1;
+    while (usedIds.has(newSheetId)) newSheetId++;
+    const paymentSheetId = existingSheetId ?? newSheetId;
+    const requests = existingSheetId === undefined ? [
+      { addSheet: { properties: { sheetId: paymentSheetId, title: FIXED_EXPENSE_PAYMENTS_TAB, gridProperties: { frozenRowCount: 3 } } } },
+      { updateCells: { start: { sheetId: paymentSheetId, rowIndex: 2, columnIndex: 0 },
+        rows: [{ values: FIXED_EXPENSE_PAYMENT_HEADERS.map(cell) }], fields: "userEnteredValue" } },
+      appendCells(paymentSheetId, FIXED_EXPENSE_PAYMENT_HEADERS, [{ ...payment }]),
+    ] : current ? updateRowCells(paymentSheetId, paymentHeaders, payments.indexOf(current) + 3, { ...payment })
+      : [appendCells(paymentSheetId, paymentHeaders, [{ ...payment }])];
+    await this.sheets.spreadsheets.batchUpdate({ spreadsheetId: this.spreadsheetId,
+      requestBody: { requests: [...requests, appendCells(auditId, auditHeaders, [audit])] } }, { retry: false });
+    return { payment, audit };
+  }
+
   private nextSequentialId(prefix: string, values: string[]) {
     const numbers = values.map((value) => Number(value.match(new RegExp(`^${prefix}-(\\d+)$`))?.[1] ?? 0));
     return `${prefix}-${String(Math.max(0, ...numbers) + 1).padStart(prefix === "FAC" ? 5 : 3, "0")}`;
+  }
+
+  async saveFixedExpense(input: FixedExpenseInput, id: string, expectedUpdatedAt: string, actor = "SISTEMA") {
+    const [{ data }, sheetId] = await Promise.all([
+      this.sheets.spreadsheets.values.batchGet({ spreadsheetId: this.spreadsheetId,
+        ranges: ["gastos_fijos!A3:ZZ", "proveedores!A3:ZZ", "restaurantes!A3:ZZ", "bitacora!A3:ZZ"],
+        valueRenderOption: "UNFORMATTED_VALUE", dateTimeRenderOption: "FORMATTED_STRING" }),
+      this.sheetIds(),
+    ]);
+    const [expenseRange, supplierRange, restaurantRange, auditRange] = data.valueRanges ?? [];
+    const [headers = [], ...rows] = expenseRange?.values ?? [];
+    const [auditHeaders = [], ...auditRows] = auditRange?.values ?? [];
+    // Los catálogos pueden reordenar columnas. Resolvemos cada ID por encabezado.
+    const catalogHasId = (values: unknown[][], field: string, value: string) => {
+      if (!value) return true;
+      const [header = [], ...entries] = values;
+      const index = columnIndex(header.map(String), field);
+      return entries.some((entry) => String(entry[index] ?? "").trim() === value);
+    };
+    if (!catalogHasId(supplierRange?.values ?? [], "proveedor_id", input.proveedor_id)) {
+      throw new InvoiceOperationError("No se encontró el proveedor del gasto fijo.", 404);
+    }
+    if (!catalogHasId(restaurantRange?.values ?? [], "restaurante_id", input.restaurante_id)) {
+      throw new InvoiceOperationError("No se encontró el restaurante del gasto fijo.", 404);
+    }
+    const expenses = parseRecords<GastoFijoRecord>(headers, rows);
+    const matches = id ? expenses.filter((expense) => expense.gasto_fijo_id === id) : [];
+    if (id && !matches.length) throw new InvoiceOperationError("No se encontró el gasto fijo.", 404);
+    if (matches.length > 1) throw new InvoiceOperationError("El ID del gasto fijo está duplicado en Google Sheets.", 409);
+    const [current] = matches;
+    if (current && (current.actualizado_en ?? "") !== expectedUpdatedAt) {
+      throw new InvoiceOperationError("El gasto fijo cambió. Actualiza la página antes de editarlo de nuevo.", 409);
+    }
+    if (!FIXED_EXPENSE_CATEGORIES.includes(input.categoria) && input.categoria !== current?.categoria) {
+      throw new InvoiceOperationError("Selecciona una categoría de la lista de gastos fijos.", 400);
+    }
+    const deleted = parseRecords<SheetRecord>(auditHeaders, auditRows)
+      .filter((entry) => entry.entidad === "gastos_fijos" && entry.accion === "Eliminar gasto fijo");
+    const deletedCodes = deleted.flatMap((entry) => {
+      try {
+        const code = JSON.parse(String(entry.valor_anterior))?.codigo_gasto;
+        return typeof code === "string" ? [code] : [];
+      } catch { return []; }
+    });
+    const gasto_fijo_id = id || this.nextSequentialId("FIJ", [...expenses.map((expense) => expense.gasto_fijo_id), ...deleted.map((entry) => String(entry.entidad_id ?? ""))]);
+    const codigo_gasto = current?.codigo_gasto || this.nextSequentialId("GF", [...expenses.map((expense) => expense.codigo_gasto), ...deletedCodes]);
+    const now = new Date().toISOString();
+    const expenseFields = { ...input, numero_referencia: input.numero_referencia ?? current?.numero_referencia ?? "", codigo_gasto, actualizado_en: now };
+    const expense: GastoFijoRecord = { gasto_fijo_id, creado_por: current?.creado_por ?? actor, creado_en: current?.creado_en ?? now, ...expenseFields };
+    const audit = auditEntry(actor, now, current ? "Editar gasto fijo" : "Crear gasto fijo", "gastos_fijos", gasto_fijo_id,
+      "registro", current?.descripcion ?? "", expense.descripcion);
+    const fixedSheetId = sheetId("gastos_fijos");
+    await this.sheets.spreadsheets.batchUpdate({ spreadsheetId: this.spreadsheetId, requestBody: { requests: [
+      ...(current ? updateRowCells(fixedSheetId, headers, expenses.indexOf(current) + 3, expenseFields) : [appendCells(fixedSheetId, headers, [{ ...expense }])]),
+      appendCells(sheetId("bitacora"), auditHeaders, [audit]),
+    ] } }, { retry: false });
+    return { expense, audit };
   }
 
   async saveSupplier(input: SupplierInput, id: string, invoiceIds: string[], actor = "SISTEMA") {
@@ -206,40 +321,48 @@ export class AccountsPayableRepository {
   }
 
   async deleteInvoice(facturaId: string, actor = "SISTEMA") {
+    return this.deleteRecord("facturas", "factura_id", facturaId, "Eliminar factura", actor);
+  }
+
+  async deleteFixedExpense(expenseId: string, expectedUpdatedAt: string, actor = "SISTEMA") {
+    return this.deleteRecord("gastos_fijos", "gasto_fijo_id", expenseId, "Eliminar gasto fijo", actor, expectedUpdatedAt);
+  }
+
+  private async deleteRecord(tab: "facturas" | "gastos_fijos", idHeader: string, id: string, action: string, actor: string, expectedUpdatedAt?: string) {
     const [{ data }, sheetId] = await Promise.all([
       this.sheets.spreadsheets.values.batchGet({
-        spreadsheetId: this.spreadsheetId, ranges: ["facturas!A3:ZZ", "bitacora!A3:ZZ"],
+        spreadsheetId: this.spreadsheetId, ranges: [`${tab}!A3:ZZ`, "bitacora!A3:ZZ"],
         valueRenderOption: "UNFORMATTED_VALUE", dateTimeRenderOption: "FORMATTED_STRING",
       }),
       this.sheetIds(),
     ]);
-    const [facturas, bitacora] = data.valueRanges ?? [];
-    const [headers = [], ...rows] = facturas?.values ?? [];
+    const [records, bitacora] = data.valueRanges ?? [];
+    const [headers = [], ...rows] = records?.values ?? [];
     const [auditHeaders = [], ...auditRows] = bitacora?.values ?? [];
-    const idColumn = columnIndex(headers, "factura_id");
-    const matches = rows.flatMap((row, index) => String(row[idColumn] ?? "").trim() === facturaId ? [index] : []);
-    if (matches.length > 1) throw new InvoiceOperationError("El ID interno aparece en más de una fila. Corrige esos IDs en Google Sheets para poder eliminar la factura correcta.", 409);
+    const idColumn = columnIndex(headers, idHeader);
+    const matches = rows.flatMap((row, index) => String(row[idColumn] ?? "").trim() === id ? [index] : []);
+    if (matches.length > 1) throw new InvoiceOperationError("El ID interno aparece en más de una fila. Corrige esos IDs en Google Sheets para poder eliminar el registro correcto.", 409);
     if (!matches.length) {
       const deleted = parseRecords<SheetRecord>(auditHeaders, auditRows).some((record) =>
-        record.entidad === "facturas" && record.entidad_id === facturaId && record.accion === "Eliminar factura");
+        record.entidad === tab && record.entidad_id === id && record.accion === action);
       if (deleted) return;
-      throw new InvoiceOperationError("Factura no encontrada. Actualiza la lista.", 404);
+      throw new InvoiceOperationError("No se encontró el registro. Actualiza la lista.", 404);
     }
     const [index] = matches;
+    if (expectedUpdatedAt !== undefined && String(rows[index][columnIndex(headers, "actualizado_en")] ?? "").trim() !== expectedUpdatedAt) {
+      throw new InvoiceOperationError("El gasto fijo cambió. Actualiza la página antes de eliminarlo.", 409);
+    }
     const original = Object.fromEntries(headers.flatMap((header, col) => header ? [[header, rows[index][col] ?? ""]] : []));
-    const audit = {
-      bitacora_id: `BIT-${crypto.randomUUID()}`, fecha_hora: new Date().toISOString(), usuario_id: actor,
-      accion: "Eliminar factura", entidad: "facturas", entidad_id: facturaId, campo: "registro",
-      valor_anterior: JSON.stringify(original), valor_nuevo: "", origen: "MANUAL", ip_o_sesion: "",
-    };
+    const audit = auditEntry(actor, new Date().toISOString(), action, tab, id, "registro", JSON.stringify(original), "");
     const startIndex = index + 3;
     await this.sheets.spreadsheets.batchUpdate({
       spreadsheetId: this.spreadsheetId,
       requestBody: { requests: [
-        { deleteDimension: { range: { sheetId: sheetId("facturas"), dimension: "ROWS", startIndex, endIndex: startIndex + 1 } } },
+        { deleteDimension: { range: { sheetId: sheetId(tab), dimension: "ROWS", startIndex, endIndex: startIndex + 1 } } },
         appendCells(sheetId("bitacora"), auditHeaders, [audit]),
       ] },
     }, { retry: false });
+    return audit;
   }
 
   async recordPayment(input: { facturaRef: string; amount: number; date: string; method: string; reference: string; bank?: string; detail?: string }, actor = "SISTEMA") {
@@ -384,8 +507,10 @@ export class AccountsPayableRepository {
   }
 
   async dashboard() {
-    const [facturas, proveedores, pagos, prestamos, prestamo_saldos, restaurantes, usuarios, bitacora] = await Promise.all([
-      this.list<FacturaRecord>("facturas"), this.list<ProveedorRecord>("proveedores"), this.list<PagoRecord>("pagos"), this.list<PrestamoRecord>("prestamos"), this.list<PrestamoSaldoRecord>("prestamo_saldos"), this.list<SheetRecord>("restaurantes"), this.list<SheetRecord>("usuarios"), this.list<SheetRecord>("bitacora"),
+    const fixedExpensePayments = this.sheetDirectory().then((directory) => directory.has(FIXED_EXPENSE_PAYMENTS_TAB)
+      ? this.list<FixedExpensePayment>(FIXED_EXPENSE_PAYMENTS_TAB) : []);
+    const [facturas, proveedores, pagos, gastos_fijos, gastos_fijos_pagos, prestamos, prestamo_saldos, restaurantes, usuarios, bitacora] = await Promise.all([
+      this.list<FacturaRecord>("facturas"), this.list<ProveedorRecord>("proveedores"), this.list<PagoRecord>("pagos"), this.list<GastoFijoRecord>("gastos_fijos"), fixedExpensePayments, this.list<PrestamoRecord>("prestamos"), this.list<PrestamoSaldoRecord>("prestamo_saldos"), this.list<SheetRecord>("restaurantes"), this.list<SheetRecord>("usuarios"), this.list<SheetRecord>("bitacora"),
     ]);
     const today = managuaDate();
     const facturasConEstado = facturas.map((factura) => ({
@@ -393,6 +518,6 @@ export class AccountsPayableRepository {
       categoria: invoiceCategory(factura.fecha_emision, factura.fecha_vencimiento),
       ...invoiceBalance(factura.monto_total, factura.monto_pagado, isoDate(factura.fecha_vencimiento), today),
     }));
-    return { facturas: facturasConEstado, proveedores, pagos, prestamos, prestamo_saldos, restaurantes, usuarios, bitacora };
+    return { facturas: facturasConEstado, proveedores, pagos, gastos_fijos, gastos_fijos_pagos, prestamos, prestamo_saldos, restaurantes, usuarios, bitacora };
   }
 }
